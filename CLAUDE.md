@@ -14,12 +14,19 @@ player-configurable sensitivity, and a difficulty manager — all marked **(v2)*
 PRD's §3. Multiple concurrent targets, moving targets, and menus are **in** scope now;
 the older text saying otherwise has been amended.
 
-Still out of scope: no Python backend, no ML training or inference, no LLM integration,
-no coaching/archetyping, no auth, no leaderboards, no sound.
+Alongside the game, an **offline Python pipeline now lives in `model/`**: it pulls
+telemetry back out of Supabase and trains a human-vs-bot classifier. It is a separate
+program, not a backend — nothing in `src/` imports it, nothing in it reaches the browser,
+and it runs by hand after the fact. The PRD's "no Python backend" means the *game* has no
+server; it does not forbid `model/`.
 
-Runtime dependencies are **only** `three` and `@supabase/supabase-js`. No frameworks —
-the home screen and overlays are plain HTML/CSS. Adding a dependency or a framework is a
-spec violation, not an improvement.
+Still out of scope: no LLM integration, no coaching/archetyping, no leaderboards, no
+sound, and no inference in the browser — the classifier is trained and applied offline.
+
+The **browser app's** runtime dependencies are **only** `three` and
+`@supabase/supabase-js`. No frameworks — the home screen and overlays are plain HTML/CSS.
+Adding a dependency or a framework *there* is a spec violation, not an improvement.
+`model/requirements.txt` is a separate dependency set and is not bound by that rule.
 
 **Five routines have shipped**: precision flick, static flicking (gridshot), dynamic
 reflex (spidershot), reactive strafing, and target switching.
@@ -44,10 +51,24 @@ npm run build      # static bundle to dist/
 npm run preview    # serve the built dist/ on :4173
 ```
 
+The offline pipeline is a second program with its own virtualenv and its own entry
+points (`model/README.md` has the one-time setup, including `model/.env`):
+
+```powershell
+cd model
+.venv\Scripts\Activate.ps1
+python -m src.fetch_telemetry --routine flick --out data/flick.parquet
+python -m src.features --in data/flick.parquet --out data/flick_features.parquet
+```
+
+Both scripts are run as modules (`python -m src.x`) from `model/`, because they use
+relative imports; `python src/features.py` fails. `data/` and `models/` are gitignored —
+everything in them is regenerable.
+
 Windows/PowerShell is the primary dev environment; use forward slashes in code.
 
-There is no test runner and no linter — adding one would mean adding dependencies. See
-"Verifying changes" below for how this codebase is actually exercised.
+There is no test runner and no linter, on either side — adding one would mean adding
+dependencies. See "Verifying changes" below for how this codebase is actually exercised.
 
 ## Architecture
 
@@ -159,17 +180,103 @@ belong there or in `difficulty.js`, not inline.
 
 ## Supabase
 
-`schema.sql` creates `telemetry_logs` with RLS and an **anon insert-only** policy — the
-browser cannot `SELECT`, so read rows from the dashboard. Credentials come from
-`.env.local` (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`); the value may be a
-publishable key (`sb_publishable_...`) or a legacy anon key, never a secret/service_role
-key. The URL must be the bare origin — a `/rest/v1` suffix produces 404s, since the client
+**The client and the pipeline now both speak the v2 schema.** The earlier v1 flat
+`telemetry_logs` path has been migrated:
+
+- `src/supabase.js` signs in **anonymously** (memoised, one sign-in per page load),
+  resolves the caller's `subject_id` from `profiles`, then writes a `sessions` row
+  (`insertSession`, awaited for its id) and one `segments` row per closed segment
+  (`insertSegment`, fire-and-forget, **no `.select()`** because `segments` has no read
+  policy). `is_human` is gone from the client — the label is `subjects.kind`, set
+  server-side.
+- `src/telemetry.js` builds two payloads (`buildSessionPayload`, `buildSegmentPayload`)
+  and stores `trajectory` **columnar** (parallel arrays keyed by field name).
+- `src/game.js` opens the session on `start()` and holds `sessionIdPromise`; each
+  `flushSegment` assembles its row synchronously and hands the promise to `insertSegment`,
+  so the network never blocks the loop. It stamps `segment_index`, `started_at_ms`
+  (`attemptStart − sessionStartMs`), and `engaged_index` (0 while a target exists, since
+  `aimTarget()` is `active[0]`, which `snapshotBoard()` records first).
+- `src/main.js` gathers the session hardware block (dpi/sens/`cm360`, `CAMERA_FOV`, a
+  rolling `refresh_hz` estimate off the render loop, coarse device fingerprint) and passes
+  it to `game.start({ session })`.
+- `model/src/fetch_telemetry.py` selects from the **`v_training_segments`** view with the
+  service key; `model/src/features.py` reads `trajectory` columnar (`_coerce_columns`).
+
+**This requires Anonymous Sign-Ins enabled in the Supabase dashboard** (Authentication →
+Sign In / Providers). Without it, `signInAnonymously()` fails, `supabase.js` logs one
+warning naming the toggle, and rows are dropped — the game still runs. `sessions.ended_at`
+is never written: there is no update policy, by design (append-only).
+
+The renamed `telemetry_logs_v1` table still holds the old flat rows; the service key can
+read it, but nothing in the app writes there any more.
+
+**The v2 shape (what `schema.sql` now defines).** Five tables, split because hardware and
+settings are session-scoped while outcomes are segment-scoped:
+
+- `subjects` — the pseudonymous person, deliberately *not* `auth.users`. Deleting an
+  account drops the `profiles` row and so anonymises the telemetry rather than destroying
+  it.
+- `profiles` — the `auth.users` ↔ subject link. Created by an `on_auth_user_created`
+  trigger, never by the client, so nobody can attach themselves to another subject.
+- `sessions` — one pointer lock: routine, difficulty, resolved `routine_config`, and the
+  hardware block (`dpi`, `sens`, `cm_per_360`, `refresh_hz`, `poll_hz`). Those last are
+  not optional metadata: `dx`/`dy` are raw device counts, so a cross-user model without
+  them learns the hardware.
+- `segments` — one span of play, the same unit `game.js` already flushes. Adds
+  `input_events` (raw pointer samples from `getCoalescedEvents`, sub-frame timing)
+  alongside `trajectory` (per-frame, carries world state). They are not interchangeable.
+- `session_metrics` — derived aggregates, written offline with the service key, read by
+  the player.
+
+Three rules the v2 design encodes, worth preserving in any migration:
+
+- **`subjects.kind` is the authoritative human/synthetic label, not a per-row boolean.**
+  Bot Mode runs in a real browser, so the client genuinely produces synthetic data; the
+  way to keep it out of the human set is to run it under a subject flagged `synthetic`,
+  never to trust the client's `is_human`. `sessions.bot_mode` is a debugging hint only.
+- **Append-only: there is no update or delete policy anywhere.** A behavioural reference
+  set the account holder can rewrite is not a reference set.
+- **`segments` has no `select` policy at all.** Trajectories are the raw material of a
+  biometric template, so an account cannot download its own reference data to replay it.
+  Aggregates reach the player through `session_metrics`, and the training pull goes
+  through the `v_training_segments` view with the service key.
+
+**Two sets of credentials, and they must not cross.** The browser reads `.env.local`
+(`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) — a publishable key (`sb_publishable_...`)
+or a legacy anon key, **never** a secret/service_role key, since `VITE_` values are inlined
+into the bundle. The pipeline reads `model/.env` (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`) —
+the service_role key, which it needs precisely because no select policy exists. In both,
+the URL must be the bare origin; a `/rest/v1` suffix produces 404s, since the client
 appends the path itself.
 
 Two behaviours worth knowing: with no credentials the app still runs, logging one warning
 and dropping rows; and because Vite inlines `import.meta.env` at build time, `.env.local`
 must exist **before** `npm run build` or the Supabase client is tree-shaken out of the
 bundle entirely.
+
+## The offline pipeline (`model/`)
+
+Two stages, each a module with a `--in`/`--out` CLI, so datasets are files on disk rather
+than state in a notebook:
+
+`fetch_telemetry.py` pages through the table in 1000-row batches — PostgREST caps a single
+response there, so the loop is not optional — filtered by `--routine`/`--is-human`, and
+writes `.parquet`, `.csv` or `.json` picked from the `--out` extension.
+
+`features.py` flattens one segment into one row. The parts that encode real decisions:
+
+- **Click-only fields stay NaN on non-click rows.** `time_to_click_ms`, `dwell_ms` and the
+  click offsets do not exist on a `timeout` or `track` segment, and are deliberately *not*
+  imputed — a fabricated reaction time would teach the classifier a lie. The v2 schema
+  enforces the same thing as a check constraint.
+- **Angular features come from `yaw`/`pitch`, input features from `dx`/`dy`.** The former
+  are DPI-independent and comparable across users; the latter are raw counts and are only
+  comparable once `sessions.dpi` is known.
+- `_coerce_frames` accepts a list, a JSON string, or a Python `repr` string, because
+  `to_csv()` stringifies nested structures with single quotes that `json.loads` rejects.
+
+Keep the game's telemetry shape and this module in sync: adding a field to `sampleFrame()`
+without teaching `_segment_features` about it silently trains on the old feature set.
 
 ## Verifying changes
 
@@ -202,6 +309,12 @@ are verified as numbers rather than impressions.
 **Bot Mode aims at where a target was when the flick began**, so against the moving
 routines it will miss often. Synthetic rows are only trustworthy for the static routines
 until the bot learns to lead a target.
+
+The `model/` side needs no database to exercise: `build_features()` takes a DataFrame, so
+a handful of hand-built segment dicts (one per outcome — `hit`, `miss`, `timeout`, `track`)
+is enough to check that click-only columns stay NaN off click rows and that a
+single-frame segment does not divide by zero. Pull real rows only when the question is
+about the data rather than the code.
 
 Browser-only criteria — pointer lock, `Esc` pausing, mouse feel, and rows actually landing
 in the database — still need a human to confirm.

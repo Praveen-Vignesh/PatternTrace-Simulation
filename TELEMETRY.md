@@ -9,10 +9,14 @@ Authoritative sources, in order: [`src/game.js`](src/game.js) (what is measured)
 [`schema.sql`](schema.sql) (where it is meant to go),
 [`model/src/features.py`](model/src/features.py) (what is derived).
 
-> **State of the world.** `schema.sql` has been rewritten to a multi-user v2 design,
-> but the client still writes the flat v1 row. Sections 3 and 4 below describe the
-> shape actually being collected today; section 5 describes what the schema defines
-> but nothing writes yet. Do not assume they match.
+> **State of the world.** The client and the pipeline now both write and read the
+> multi-user **v2** schema: `supabase.js` signs in anonymously and writes `sessions` +
+> `segments` (columnar `trajectory`), and the pipeline reads `v_training_segments`.
+> **Section 5 is the live shape.** Sections 3 and 4 document the legacy **v1** flat row
+> (`telemetry_logs`, now renamed `telemetry_logs_v1`) — kept here because those rows
+> still exist and because the per-field semantics (nullability, precision, per-frame
+> fields) carried over unchanged into v2's `segments.trajectory`. The v2 write path needs
+> **Anonymous Sign-Ins enabled in the Supabase dashboard**, or every row is dropped.
 
 ---
 

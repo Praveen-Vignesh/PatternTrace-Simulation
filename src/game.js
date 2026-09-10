@@ -1,8 +1,8 @@
 import { Euler, Raycaster, Vector2, Vector3 } from 'three';
 import { createRoutine } from './routines/index.js';
 import { configFor } from './difficulty.js';
-import { createTelemetry, buildPayload } from './telemetry.js';
-import { insertTelemetry } from './supabase.js';
+import { createTelemetry, buildSegmentPayload, buildSessionPayload } from './telemetry.js';
+import { insertSession, insertSegment } from './supabase.js';
 import {
   FEEDBACK_FLASH_MS,
   TRACK_WINDOW_MS,
@@ -34,7 +34,12 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
 
   let routine = null;
   let running = false;
-  let sessionId = null;
+  // The DB session id arrives asynchronously; every segment awaits this promise
+  // so it can be assembled synchronously in the game loop while the id is still
+  // in flight. Resolves to null when persistence is unavailable.
+  let sessionIdPromise = Promise.resolve(null);
+  let sessionStartMs = 0;
+  let segmentIndex = 0;
   let routineId = DEFAULT_ROUTINE;
   let difficulty = DEFAULT_DIFFICULTY;
   let kind = 'destructible';
@@ -145,13 +150,11 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
       clickOffset = null
     } = fields;
 
-    insertTelemetry(
-      buildPayload({
-        sessionId,
-        isHuman: bot === null,
-        botMode: bot === null ? null : bot.mode,
-        routine: routineId,
-        difficulty,
+    insertSegment(
+      sessionIdPromise,
+      buildSegmentPayload({
+        segmentIndex: segmentIndex++,
+        startedAtMs: Math.round(attemptStart - sessionStartMs),
         outcome,
         targetDistance,
         timeToClickMs,
@@ -159,6 +162,9 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
         clickOffset,
         targetCount: board.length,
         targets: board,
+        // aimTarget() is active[0], which snapshotBoard() records first, so the
+        // engaged target is board[0] whenever the board is non-empty.
+        engagedIndex: board.length > 0 ? 0 : null,
         frames
       })
     );
@@ -307,7 +313,23 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
       routine = createRoutine(routineId, { scene, camera, config });
       kind = routine.kind ?? 'destructible';
 
-      sessionId = crypto.randomUUID();
+      const now = performance.now();
+      sessionStartMs = now;
+      segmentIndex = 0;
+
+      // Open the session row. Its id is awaited by every segment insert, so the
+      // network round-trip never blocks the game loop. options.session carries
+      // the hardware block (dpi/sens/cm360, fov, refresh, device) from main.js.
+      sessionIdPromise = insertSession(
+        buildSessionPayload({
+          routine: routineId,
+          difficulty,
+          routineConfig: config,
+          botMode: bot === null ? null : bot.mode,
+          ...(options.session ?? {})
+        })
+      );
+
       hits = 0;
       attempts = 0;
       clicks = 0;
@@ -319,7 +341,6 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
       running = true;
       if (bot === null) document.addEventListener('mousemove', onMouseMove);
 
-      const now = performance.now();
       routine.start(now);
       beginAttempt(now);
     },

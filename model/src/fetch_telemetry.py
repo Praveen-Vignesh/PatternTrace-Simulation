@@ -10,7 +10,11 @@ from supabase import Client
 from .config import DATA_DIR, get_client
 
 PAGE_SIZE = 1000
-TABLE = "telemetry_logs"
+# The v2 training view (schema.sql): segments joined to sessions and subjects,
+# with is_human derived from subjects.kind (which the client cannot forge). It is
+# revoked from anon/authenticated and readable only with the service key, which
+# bypasses RLS. Replaces the flat telemetry_logs table, now renamed _v1.
+TABLE = "v_training_segments"
 
 
 def fetch_all_segments(
