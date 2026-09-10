@@ -3,6 +3,7 @@ dist
 dist-ssr
 *.local
 .env.local
+CLAUDE.md
 
 logs
 *.log
