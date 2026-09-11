@@ -487,8 +487,11 @@ Four additions matter for modelling:
 - `engaged_index` identifies which entry of `targets` was engaged — fixes Trap 1.
 - `input_events` `{t, dx, dy}` are raw pointer samples at native polling rate via
   `getCoalescedEvents`, carrying **sub-frame timing that render-cadence sampling
-  destroys**. Nullable, and currently never written. This is the single largest gap for
-  biometric human/bot discrimination.
+  destroys** — the strongest biometric signal. **Now captured** (`onPointerMove` in
+  `game.js`, buffered per segment in `telemetry.js`); `t` keeps 0.01 ms resolution.
+  Nullable by design: it is `null` on a Bot Mode segment (no pointer listener) and on any
+  browser without the coalesced-events API, which keeps "not captured" distinct from
+  "captured nothing". `features.py` does not derive from it yet — that is the open work.
 - `frame_count` / `event_count` are lifted out of the jsonb so segments can be filtered
   without parsing either blob.
 
@@ -741,8 +744,10 @@ Design rules it follows, worth preserving:
 5. **Use `target_distance` and `targets`** — currently collected and thrown away.
 6. **Treat the current bot as a negative control, not a bot model.** A classifier
    separating it at 99% has learned `path_efficiency == 1.0` and `dwell_ms == 0`.
-7. **The real biometric signal needs `input_events`** — sub-frame pointer timing via
-   `getCoalescedEvents`, defined in the v2 schema and not yet implemented client-side.
+7. **Derive features from `input_events`** — the sub-frame pointer stream is now captured
+   (`getCoalescedEvents`), but `features.py` still reads only `trajectory`. Inter-arrival
+   timing, per-sample speed distribution, and poll-rate regularity are the strongest
+   human/bot discriminators and remain unextracted.
 
 ---
 

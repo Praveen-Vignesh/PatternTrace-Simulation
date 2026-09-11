@@ -63,8 +63,8 @@ export function isAvailable(id) {
 }
 
 // Every routine exposes the same shape: a live `targets` array to raycast
-// against, start/update/stop, hit and miss resolution, and the target Bot Mode
-// should fly to.
+// against, start/update/stop, hit and miss resolution, and aimTarget() — the
+// engaged target whose position each telemetry frame records.
 export function createRoutine(id, deps) {
   const factory = FACTORIES[id] ?? FACTORIES.flick;
   return factory(deps);

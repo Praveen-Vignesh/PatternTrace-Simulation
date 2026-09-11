@@ -28,7 +28,7 @@ function round3(value) {
 
 // Hosts whichever routine is active: it owns the session, the raycast, the HUD
 // counters and telemetry, and asks the routine what to do with a hit or a miss.
-export function createGame({ scene, camera, crosshair, hud, bot = null }) {
+export function createGame({ scene, camera, crosshair, hud }) {
   const raycaster = new Raycaster();
   const telemetry = createTelemetry();
 
@@ -45,6 +45,11 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
   let kind = 'destructible';
   let attemptStart = 0;
   let dwellStart = 0;
+  // Index of the engaged target within the segment's `targets` snapshot,
+  // captured at segment start and shipped with the row. Not hardcoded: the
+  // moment a routine's aimTarget() stops being targets[0] a hardcoded 0 would
+  // silently mislabel every row with no error.
+  let engagedIndexAtStart = null;
   // Raw mouse counts accumulated between rendered frames, flushed into one
   // sample per frame so the trajectory has a steady cadence.
   let pendingDx = 0;
@@ -59,8 +64,8 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
     hud.update({ hits, attempts, clicks, totalTimeMs });
   }
 
-  // The camera's absolute yaw/pitch, read off the same quaternion the player
-  // and the bot both rotate — so telemetry is DPI-independent for either.
+  // The camera's absolute yaw/pitch, read off the camera quaternion — so
+  // telemetry is DPI-independent, comparable across sensitivities and users.
   function cameraAngles() {
     _euler.setFromQuaternion(camera.quaternion, 'YXZ');
     return { yaw: _euler.y, pitch: _euler.x };
@@ -77,8 +82,8 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
     return _intersections.length > 0 ? _intersections[0] : null;
   }
 
-  // The engaged target is the one Bot Mode flies to and the one whose position
-  // each frame records — for a single-target routine it is simply the target.
+  // The engaged target is the one whose position each frame records — for a
+  // single-target routine it is simply the target.
   function engagedTarget() {
     return routine.aimTarget();
   }
@@ -120,6 +125,12 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
       tz: engaged === null ? null : engaged.position.z,
       on
     });
+
+    // Multi-target moving routines also record every live target's position, in
+    // lockstep with the frame above so the two streams share a frame count.
+    if (routine.tracksBoardTrajectory === true) {
+      telemetry.sampleBoard(routine.targets.map((target) => target.position));
+    }
   }
 
   // A segment is one row. It opens on spawn/re-arm, on a click, or on a window
@@ -127,12 +138,15 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
   function beginAttempt(now) {
     attemptStart = now;
     dwellStart = 0;
+
+    // Capture which target in the snapshot is the engaged one, before any of
+    // this segment's frames are sampled. targets is the routine's live active
+    // array, which snapshotBoard() records in order, so the index lines up.
+    const engaged = engagedTarget();
+    const index = engaged === null ? -1 : routine.targets.indexOf(engaged);
+    engagedIndexAtStart = index === -1 ? null : index;
+
     telemetry.beginSegment(now, snapshotBoard());
-
-    if (bot === null) return;
-
-    const aim = engagedTarget();
-    if (aim !== null) bot.beginFlick(camera, aim.position, now);
   }
 
   // Ships the segment that just closed. The frames/board references are read
@@ -143,6 +157,8 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
     if (frames.length === 0) return;
 
     const board = telemetry.board();
+    const inputs = telemetry.inputs();
+    const boardFrames = telemetry.boardFrames();
     const {
       targetDistance = null,
       timeToClickMs = null,
@@ -162,10 +178,10 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
         clickOffset,
         targetCount: board.length,
         targets: board,
-        // aimTarget() is active[0], which snapshotBoard() records first, so the
-        // engaged target is board[0] whenever the board is non-empty.
-        engagedIndex: board.length > 0 ? 0 : null,
-        frames
+        engagedIndex: engagedIndexAtStart,
+        frames,
+        inputs,
+        boardFrames
       })
     );
   }
@@ -244,15 +260,32 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
     pushHud();
   }
 
-  function onMouseMove(event) {
+  // Pointer events (not mouse events) expose getCoalescedEvents(): the raw
+  // sub-frame samples the browser merged into this one, at the native poll rate.
+  // Each is accumulated into the per-frame trajectory AND recorded individually
+  // into the segment's input stream, whose finer timing the frame sampler loses.
+  // The coalesced deltas sum to the merged event's, so trajectory dx/dy are
+  // unchanged; the fallback covers browsers without the API.
+  function onPointerMove(event) {
+    const coalesced =
+      typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : null;
+
+    if (coalesced !== null && coalesced.length > 0) {
+      for (const sample of coalesced) {
+        pendingDx += sample.movementX;
+        pendingDy += sample.movementY;
+        telemetry.recordInput(sample.timeStamp, sample.movementX, sample.movementY);
+      }
+      return;
+    }
+
     pendingDx += event.movementX;
     pendingDy += event.movementY;
+    telemetry.recordInput(event.timeStamp, event.movementX, event.movementY);
   }
 
-  // In Bot Mode the bot pulls the trigger, so a stray human click cannot
-  // contaminate a segment that is still in progress.
   function onMouseDown(event) {
-    if (running === false || bot !== null || event.button !== 0) return;
+    if (running === false || event.button !== 0) return;
 
     const now = performance.now();
     if (kind === 'tracking') trackingShot(now);
@@ -276,23 +309,11 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
         pushHud();
       }
 
-      let dx = 0;
-      let dy = 0;
-      if (bot !== null) {
-        const step = bot.advance(camera, now);
-        if (step !== null) {
-          dx = step.dx;
-          dy = step.dy;
-        }
-        sampleFrame(now, dx, dy);
-        if (step !== null && step.done && kind !== 'tracking') shoot(now);
-      } else {
-        dx = pendingDx;
-        dy = pendingDy;
-        pendingDx = 0;
-        pendingDy = 0;
-        sampleFrame(now, dx, dy);
-      }
+      const dx = pendingDx;
+      const dy = pendingDy;
+      pendingDx = 0;
+      pendingDy = 0;
+      sampleFrame(now, dx, dy);
 
       // Tracking has no click to end a segment, so cut it into fixed windows:
       // one row per window keeps the buffer bounded and the rows uniform.
@@ -325,7 +346,6 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
           routine: routineId,
           difficulty,
           routineConfig: config,
-          botMode: bot === null ? null : bot.mode,
           ...(options.session ?? {})
         })
       );
@@ -339,7 +359,7 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
       pushHud();
 
       running = true;
-      if (bot === null) document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('pointermove', onPointerMove);
 
       routine.start(now);
       beginAttempt(now);
@@ -347,7 +367,7 @@ export function createGame({ scene, camera, crosshair, hud, bot = null }) {
 
     stop() {
       running = false;
-      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('pointermove', onPointerMove);
 
       if (routine !== null) {
         // A tracking session may hold an unflushed partial window — keep it, or

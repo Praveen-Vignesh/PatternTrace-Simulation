@@ -23,6 +23,35 @@
           <p class="muted">Pick a routine, set your sensitivity, and go.</p>
         </header>
 
+        <section id="account-section" class="account">
+          <h2>Account</h2>
+
+          <div id="account-signed-out">
+            <div class="field">
+              <label for="email-input">Email</label>
+              <input id="email-input" type="email" autocomplete="email" placeholder="you@example.com" />
+            </div>
+            <div class="field">
+              <label for="password-input">Password</label>
+              <input id="password-input" type="password" autocomplete="current-password" placeholder="At least 6 characters" />
+            </div>
+            <label class="consent">
+              <input id="consent-checkbox" type="checkbox" />
+              <span>I agree to my aim telemetry being collected and used for research.</span>
+            </label>
+            <div class="auth-actions">
+              <button id="signin-button" class="secondary">Sign in</button>
+              <button id="signup-button" class="primary">Create account</button>
+            </div>
+            <p id="auth-message" class="note" role="alert"></p>
+          </div>
+
+          <div id="account-signed-in" class="hidden">
+            <p class="muted">Signed in as <strong id="account-email">&mdash;</strong></p>
+            <button id="signout-button" class="secondary">Sign out</button>
+          </div>
+        </section>
+
         <section>
           <h2>Routine</h2>
           <div id="mode-grid" class="mode-grid"></div>
@@ -54,7 +83,7 @@
         </section>
 
         <button id="start-button" class="primary">Start</button>
-        <p class="note">Esc pauses. Left click to shoot.</p>
+        <p id="start-note" class="note">Esc pauses. Left click to shoot.</p>
       </div>
     </div>
 

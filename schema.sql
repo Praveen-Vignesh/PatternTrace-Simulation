@@ -32,10 +32,10 @@ alter table if exists public.telemetry_logs rename to telemetry_logs_v1;
 --
 -- `kind` is the authoritative human/synthetic label, and it lives here rather
 -- than on a segment because a client can lie about a row but cannot change its
--- own subject. Bot Mode runs (?bot=linear) execute in a real browser, so the
--- browser genuinely does produce synthetic data — the way to keep that out of
--- the human set is to run it under a subject flagged synthetic with the service
--- key, never to trust a per-row boolean.
+-- own subject. Synthetic data (a bot driven in a real browser) is kept out of
+-- the human set by running it under a subject provisioned with the service key
+-- as kind='synthetic' (kind_source='provisioned'), never by trusting a per-row
+-- boolean the client controls.
 
 create table if not exists public.subjects (
   subject_id uuid primary key default gen_random_uuid(),
@@ -44,8 +44,45 @@ create table if not exists public.subjects (
   -- Consent is stamped here, not only on profiles, so the record of it survives
   -- account deletion along with the data it authorises.
   consent_version text,
-  consented_at timestamptz
+  consented_at timestamptz,
+
+  -- Deduplication. One human can land on more than one subject — a second
+  -- browser, cleared storage, a new device each mints a fresh auth user and so
+  -- a fresh subject via the trigger below. Point the duplicates at the survivor
+  -- here (never merge the rows: append-only), and the training view collapses
+  -- them to one identity. NULL means "this row is itself canonical". Left unset
+  -- the ML grouping key (subject_id) would leak the same person across a
+  -- train/test split and silently inflate accuracy.
+  merged_into uuid references public.subjects(subject_id),
+
+  -- How `kind` was decided, so a synthetic subject provisioned by hand is
+  -- distinguishable from one that merely defaulted. 'default' is the trigger's
+  -- value; flip to 'provisioned' (or 'reviewed') with the service key when you
+  -- deliberately set kind.
+  kind_source text not null default 'default'
+    constraint subjects_kind_source_check
+    check (kind_source in ('default', 'provisioned', 'reviewed'))
 );
+
+-- Additive migration for databases created before these columns existed.
+-- `create table if not exists` above is a no-op on an existing table, so the
+-- columns have to be added explicitly for a re-run to upgrade in place.
+alter table public.subjects
+  add column if not exists merged_into uuid references public.subjects(subject_id);
+alter table public.subjects
+  add column if not exists kind_source text not null default 'default';
+-- The check constraint is added separately so a re-run does not error if it is
+-- already present (Postgres has no "add constraint if not exists").
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'subjects_kind_source_check'
+  ) then
+    alter table public.subjects
+      add constraint subjects_kind_source_check
+      check (kind_source in ('default', 'provisioned', 'reviewed'));
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------------
 -- profiles
@@ -116,6 +153,12 @@ create table if not exists public.sessions (
   -- Server clock. Never client-supplied: a client-set timestamp is forgeable,
   -- and ordering matters for both fatigue effects and replay detection.
   started_at timestamptz not null default now(),
+  -- SERVICE-WRITTEN, never by the client. The session row is inserted at
+  -- game.start(), when the end is by definition unknown, and there is no update
+  -- policy (append-only, by design), so the client cannot close it later. It is
+  -- filled offline from started_at + the last segment's (started_at_ms +
+  -- trajectory tail) — a server-anchored, monotonic figure, more trustworthy
+  -- than a forgeable client wall-clock. Do NOT "fix" this with an update policy.
   ended_at timestamptz,
 
   routine text not null,
@@ -129,7 +172,10 @@ create table if not exists public.sessions (
   sens double precision not null,
   cm_per_360 double precision,
 
-  -- Rendering and input rates. Measured client-side over the session.
+  -- Rendering and input rates. refresh_hz is a rolling client estimate off the
+  -- render loop. poll_hz is SERVICE-WRITTEN: the client leaves it null and it is
+  -- derived offline from input_events inter-arrival gaps, which measure the true
+  -- pointer polling rate more accurately than anything the page can sample.
   fov_deg double precision,
   refresh_hz double precision,
   poll_hz double precision,
@@ -144,9 +190,11 @@ create table if not exists public.sessions (
   screen_height int,
   device_pixel_ratio double precision,
 
-  -- Bot Mode as the client reports it. A hint for debugging only — it is
-  -- client-controlled and must never be used as a training label. Use
-  -- subjects.kind instead.
+  -- LEGACY. The in-browser Bot Mode was removed, so the client no longer writes
+  -- this and it is always null on new rows. Kept as a column so old rows still
+  -- parse. Synthetic data is now produced only under a subject explicitly
+  -- flagged kind='synthetic' (kind_source='provisioned'); the label lives on the
+  -- subject, never on a client-controlled per-session field.
   bot_mode text,
 
   -- Stamp of the code that produced the session. Without it, a change to the
@@ -214,10 +262,25 @@ create table if not exists public.segments (
 
   trajectory jsonb not null,
   input_events jsonb,
+
+  -- The paths of the NON-engaged targets, per rendered frame, for a routine
+  -- that holds several MOVING targets at once (switching). trajectory only
+  -- carries the engaged target's tx/ty/tz, so without this the other targets'
+  -- motion is unrecoverable — and "how far was the next target, did they switch
+  -- to the nearest" is exactly the signal that routine exists to measure. NULL
+  -- for single-target and static routines (flick, gridshot, spidershot,
+  -- strafing), where `targets` at segment start already describes the board.
+  -- Columnar and aligned to `targets`: {x: [[per-frame] per target], y, z}.
+  board_trajectory jsonb,
+
   -- Lengths lifted out of the jsonb so segments can be filtered and sanity
   -- checked without parsing either blob.
   frame_count int not null,
   event_count int,
+  -- Segment wall-time, lifted out of the trajectory's last `t` so "how long was
+  -- this segment" is a column query, not a blob parse. This is a per-segment
+  -- duration; whole-session end is derived offline (see sessions.ended_at).
+  duration_ms int,
 
   constraint segments_session_order unique (session_id, segment_index),
 
@@ -233,6 +296,10 @@ create table if not exists public.segments (
     )
   )
 );
+
+-- Additive migration for databases created before these columns existed.
+alter table public.segments add column if not exists board_trajectory jsonb;
+alter table public.segments add column if not exists duration_ms int;
 
 -- ---------------------------------------------------------------------------
 -- session_metrics
@@ -270,6 +337,10 @@ create index if not exists segments_outcome_idx
   on public.segments (outcome);
 create index if not exists subjects_kind_idx
   on public.subjects (kind);
+-- Resolving a subject to its canonical identity in the training view, and
+-- listing everything merged into a survivor.
+create index if not exists subjects_merged_into_idx
+  on public.subjects (merged_into);
 
 -- ---------------------------------------------------------------------------
 -- Row level security
@@ -350,12 +421,33 @@ create policy "session metrics select own"
 -- hand or re-derive the label. `is_human` comes from subjects.kind, which the
 -- client cannot write — unlike the v1 per-row boolean, which it could.
 -- Service-key reads bypass RLS, so this stays invisible to the browser.
+--
+-- security_invoker so the view runs with the caller's privileges, not the
+-- owner's. The real protection is the revoke below (only the service key, which
+-- bypasses RLS, can read it); security_invoker removes the footgun where a
+-- single future GRANT would otherwise expose every subject's trajectories
+-- through an owner-privileged view.
+--
+-- subject_id is the CANONICAL identity: merged duplicates collapse onto their
+-- survivor via merged_into, so this is the correct grouping key for a
+-- train/test split. raw_subject_id keeps the un-collapsed value for auditing a
+-- merge. Collapsing here means a later merge is a single UPDATE with zero
+-- pipeline changes.
+--
+-- Dropped and recreated rather than CREATE OR REPLACE: replace can only append
+-- columns to the end of an existing view, and this revision inserts
+-- raw_subject_id mid-list, which replace rejects as a rename. The view holds no
+-- data, so dropping it is free.
 
-create or replace view public.v_training_segments as
+drop view if exists public.v_training_segments;
+
+create view public.v_training_segments
+with (security_invoker = true) as
 select
-  g.id                as segment_id,
-  s.id                as session_id,
-  s.subject_id,
+  g.id                              as segment_id,
+  s.id                              as session_id,
+  coalesce(sub.merged_into, sub.subject_id) as subject_id,
+  sub.subject_id                    as raw_subject_id,
   sub.kind = 'human'  as is_human,
   sub.kind            as subject_kind,
   s.routine,
@@ -384,8 +476,10 @@ select
   g.engaged_index,
   g.trajectory,
   g.input_events,
+  g.board_trajectory,
   g.frame_count,
-  g.event_count
+  g.event_count,
+  g.duration_ms
 from public.segments g
 join public.sessions s   on s.id = g.session_id
 join public.subjects sub on sub.subject_id = s.subject_id;

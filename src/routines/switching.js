@@ -38,6 +38,11 @@ export function createSwitchingRoutine({ scene, camera, config }) {
   return {
     kind: 'destructible',
     targets: pool.active,
+    // Several targets move at once, so the non-engaged targets' paths must be
+    // recorded per frame (board_trajectory) — the drill is target selection, and
+    // "where was the target you switched to" is unrecoverable otherwise. The
+    // single-target and static routines leave this off.
+    tracksBoardTrajectory: true,
 
     start(now) {
       pool.releaseAll();

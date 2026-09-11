@@ -65,6 +65,12 @@ Both scripts are run as modules (`python -m src.x`) from `model/`, because they 
 relative imports; `python src/features.py` fails. `data/` and `models/` are gitignored —
 everything in them is regenerable.
 
+> **Pipeline status (in flux).** `model/src/` currently holds only `fetch_telemetry.py`;
+> `config.py`, `features.py` and `__init__.py` were deleted and are being rebuilt as the
+> next task. `fetch_telemetry.py` still `import`s `from .config import DATA_DIR, get_client`,
+> so it will not run until `config.py` (and the package `__init__.py`) are restored. The
+> sections below document the intended pipeline design that rebuild targets.
+
 Windows/PowerShell is the primary dev environment; use forward slashes in code.
 
 There is no test runner and no linter, on either side — adding one would mean adding
@@ -73,9 +79,9 @@ dependencies. See "Verifying changes" below for how this codebase is actually ex
 ## Architecture
 
 Plain ES modules, one factory function per file, no classes and no shared mutable state
-between modules. `main.js` is the only composition point: it builds the scene, controls,
-HUD and (optionally) the bot, injects them into `createGame()`, and owns the
-`requestAnimationFrame` loop.
+between modules. `main.js` is the only composition point: it builds the scene, controls
+and HUD, injects them into `createGame()`, wires the account panel and free-session gate,
+and owns the `requestAnimationFrame` loop.
 
 **Pointer lock is the session boundary.** `PointerLockControls` `lock`/`unlock` events
 drive everything: lock switches to the PLAYING screen and calls `game.start()` with the
@@ -89,8 +95,8 @@ span of play that closes with an `outcome`: destructible routines close on a cli
 `TRACK_WINDOW_MS` (`track`) and once more on `stop()`. This is what makes one table fit
 every mode — every row carries `routine`, `difficulty`, `outcome`, the board layout at
 segment start (`targets` + `target_count`), and a per-frame stream. `beginAttempt()` opens a
-segment: stamps the clock, resets dwell, snapshots the board, and points the bot at
-`routine.aimTarget()`. `flushSegment(outcome, fields)` ships the one that closed — read its
+segment: stamps the clock, resets dwell, snapshots the board, and records `engaged_index`
+(`routine.targets.indexOf(aimTarget())`). `flushSegment(outcome, fields)` ships the one that closed — read its
 `frames`/`board` **before** `beginAttempt()` swaps in fresh arrays, so an in-flight insert
 keeps its own array (the buffer is replaced, never emptied in place). An empty segment (no
 frame sampled yet) is never shipped.
@@ -99,18 +105,19 @@ frame sampled yet) is never shipped.
 tx, ty, tz, on}`.** `update()` calls `sampleFrame()` every frame *after* `routine.update()`
 has moved the targets, so the aim and the world state are recorded together — the fix for
 tracking and moving-target modes, where the target moves even when the mouse is still.
-`dx`/`dy` are the raw device counts for that frame (human: accumulated from `mousemove` into
-`pendingDx/Dy` and drained here; bot: the frame's synthetic step). `yaw`/`pitch` are the
-camera's absolute angles read off `camera.quaternion` as a `YXZ` Euler (`.y` yaw, `.x` pitch)
-— DPI-independent, sampled identically for player and bot. `tx/ty/tz` are the engaged
-(`aimTarget()`) target's world position that frame; `on` is whether the crosshair sat on any
-live target (`raycastCenter()`), which also stamps `dwellStart` on first contact. Angles are
-rounded to 5 decimals, positions to 3, in `telemetry.js`.
+`dx`/`dy` are the raw device counts for that frame (accumulated from the pointer stream into
+`pendingDx/Dy` and drained here). `yaw`/`pitch` are the camera's absolute angles read off
+`camera.quaternion` as a `YXZ` Euler (`.y` yaw, `.x` pitch) — DPI-independent. `tx/ty/tz` are
+the engaged (`aimTarget()`) target's world position that frame; `on` is whether the crosshair
+sat on any live target (`raycastCenter()`), which also stamps `dwellStart` on first contact.
+A multi-target moving routine (`tracksBoardTrajectory`) additionally records every live
+target's position that frame into `board_trajectory`, in lockstep so the frame counts match.
+Angles are rounded to 5 decimals, positions to 3, in `telemetry.js`.
 
 **`dwell_ms`, `time_to_click_ms`, and `click_offset` are click-only.** They are non-null on
 `hit`/`miss` rows; `null` on `timeout` and `track` rows, which have no landed shot. `dwell_ms`
 is `now - dwellStart` (the crosshair first settling on a target until the click), or `null`
-when it never registered — which is why bot hits usually carry a null dwell.
+when it never registered (a pure miss, or a click before the crosshair touched a target).
 
 A target that expires on its own (spidershot) still writes a row: `flushSegment('timeout')`
 ships the failed attempt's search trajectory as a labeled miss before re-arming, and it
@@ -118,7 +125,8 @@ counts against accuracy but not against the average click time (the `clicks` HUD
 
 **Routines own their targets; `game.js` owns everything else.** Each routine exposes the
 same shape: a live `targets` array to raycast against, `start`/`update`/`stop`,
-`resolveHit`/`resolveMiss`, and `aimTarget()` for Bot Mode. `update()` returns
+`resolveHit`/`resolveMiss`, and `aimTarget()` (the engaged target each telemetry frame
+records; multi-target moving routines also set `tracksBoardTrajectory`). `update()` returns
 `{expired}` using frozen module-level constants, since it runs every frame. A routine is
 built fresh per session, so mode and difficulty changes always take effect on the next
 start — which means `stop()` must dispose its pool or meshes accumulate in the scene.
@@ -128,13 +136,10 @@ would stutter the frame. The moving routines (spidershot, strafing, switching) s
 so a backgrounded tab doesn't teleport a target on return, and `clampInside`/`bounce`
 implement the inset-spawn and wall-reflection invariants below.
 
-**Bot mode is a camera driver, not a separate game.** `?bot=linear` or `?bot=smoothed`
-makes `main.js` disable `controls.enabled` and pass a bot into the game. From then on
-`game.update(now)` advances the flick one frame at a time, feeds the bot's own rotation into
-that frame's sample as the synthetic `dx/dy`, and (for a destructible routine) calls the
-same `shoot()` a human click would. In bot mode the `mousemove` listener is never attached
-and human clicks are ignored, so a synthetic row can never be contaminated. Without a bot,
-`game.update()` returns immediately.
+**The in-browser Bot Mode was removed** (no `?bot=`, no `bot.js`). Synthetic reference data
+is now produced only under a subject provisioned server-side as `kind='synthetic'`, never by
+a client-controlled flag. `game.update()` samples the human's aim each frame; without a
+running session it returns immediately.
 
 **The home screen is the resting state.** `main.js` runs three screens — HOME, PLAYING,
 PAUSED. Pointer lock still bounds a session, but HOME sits in front of it: Start requests
@@ -155,17 +160,15 @@ belong there or in `difficulty.js`, not inline.
   it with `length = 0` would ship an empty `trajectory`.
 - **Target radius must never scale with distance.** Depth variance in `SPAWN_VOLUME` is the
   whole point — constant screen size would make the Z axis cosmetic (PRD §5.3).
-- **One sensitivity value, two consumers.** `sensitivity.js` converts DPI + in-game sens
-  (Valorant scale, 0.07°/count) into both `controls.pointerSpeed` and the bot's
-  `radiansPerMovementUnit`. `main.js` must push a settings change into *both*
-  (`applySensitivity` and `bot.setRadiansPerMovementUnit`). If they drift, the game still
-  looks fine while every synthetic bot row silently describes the wrong rotation. The
-  `0.002` in `sensitivity.js` mirrors a PointerLockControls internal.
+- **Sensitivity is one value; `main.js` must push a settings change into `applySensitivity`.**
+  `sensitivity.js` converts DPI + in-game sens (Valorant scale, 0.07°/count) into
+  `controls.pointerSpeed`, and stores `cm_per_360` on the session row as the DPI-independent
+  ground truth. The `0.002` in `sensitivity.js` mirrors a PointerLockControls internal.
 - **Target radius is changed by rebuilding geometry, never by scaling the mesh.** A non-unit
   scale would distort `worldToLocal` and corrupt every recorded click offset (`target.js`).
-- **Bot deltas are integers with the rounding error carried between frames**, so they look
-  like real mouse counts *and* still sum to exactly the rotation performed.
-- **Never call Supabase from `mousemove`.** Buffer only.
+- **Never call Supabase from the pointer stream.** `onPointerMove` buffers into
+  `pendingDx/Dy` and the segment's `input_events` only; the network is touched by the outbox,
+  never inline.
 - **Moving targets must `updateMatrixWorld()` after they move.** The routine runs before
   `renderer.render()`, and the click raycast reads `matrixWorld`, not `position`. Skip it
   and shots are judged against where the target was a frame ago.
@@ -183,29 +186,47 @@ belong there or in `difficulty.js`, not inline.
 **The client and the pipeline now both speak the v2 schema.** The earlier v1 flat
 `telemetry_logs` path has been migrated:
 
-- `src/supabase.js` signs in **anonymously** (memoised, one sign-in per page load),
-  resolves the caller's `subject_id` from `profiles`, then writes a `sessions` row
-  (`insertSession`, awaited for its id) and one `segments` row per closed segment
-  (`insertSegment`, fire-and-forget, **no `.select()`** because `segments` has no read
-  policy). `is_human` is gone from the client — the label is `subjects.kind`, set
-  server-side.
+- `src/supabase.js` requires a **real email + password account** (anonymous sign-in was
+  removed). `ensureAuth()` resolves the caller's `subject_id` from `profiles` only when a
+  session exists, and returns `null` otherwise — so an unauthenticated (free) session writes
+  nothing at all, which is the guarantee that no anonymous rows reach the table. It writes a
+  `sessions` row (`insertSession`, awaited for its id) and hands each closed segment to the
+  **durable outbox** (`insertSegment`), never a bare fire-and-forget insert. `is_human` is
+  gone from the client — the label is `subjects.kind`, set server-side.
+- **Segment delivery goes through `src/outbox.js`**: batched, retried with backoff, and
+  mirrored to **IndexedDB** (async — never localStorage, whose sync write would hitch the
+  render loop the timing features are measured from). Delivery is an idempotent upsert with
+  `ignoreDuplicates` (ON CONFLICT DO NOTHING on `unique (session_id, segment_index)`), which
+  needs no update privilege, so it respects append-only RLS and a partly-landed batch can be
+  retried whole. `flushTelemetryKeepalive()` sends the last batch on `pagehide` with a
+  keepalive fetch; anything unsent replays from IndexedDB on the next load (`initTelemetryOutbox`).
 - `src/telemetry.js` builds two payloads (`buildSessionPayload`, `buildSegmentPayload`)
-  and stores `trajectory` **columnar** (parallel arrays keyed by field name).
+  and stores streams **columnar** (parallel arrays keyed by field name): `trajectory`
+  (per rendered frame), `input_events` (`{t, dx, dy}`, one per raw pointer sample), and
+  `board_trajectory` (the non-engaged targets' per-frame paths, only for a multi-target
+  moving routine). Each segment also carries `duration_ms` (lifted from the trajectory tail).
 - `src/game.js` opens the session on `start()` and holds `sessionIdPromise`; each
   `flushSegment` assembles its row synchronously and hands the promise to `insertSegment`,
   so the network never blocks the loop. It stamps `segment_index`, `started_at_ms`
-  (`attemptStart − sessionStartMs`), and `engaged_index` (0 while a target exists, since
-  `aimTarget()` is `active[0]`, which `snapshotBoard()` records first).
+  (`attemptStart − sessionStartMs`), and `engaged_index` — captured at segment start as
+  `routine.targets.indexOf(aimTarget())`, no longer hardcoded to 0. `onPointerMove`
+  (not `mousemove`) drains `getCoalescedEvents()` into both the per-frame trajectory and
+  the segment's raw `input_events` buffer.
 - `src/main.js` gathers the session hardware block (dpi/sens/`cm360`, `CAMERA_FOV`, a
-  rolling `refresh_hz` estimate off the render loop, coarse device fingerprint) and passes
-  it to `game.start({ session })`.
+  rolling `refresh_hz` estimate off the render loop, coarse device fingerprint, plus
+  `app_version`/`sampling_version`) and passes it to `game.start({ session })`. It also owns
+  the account panel wiring and the free-session gate (`FREE_SESSION_LIMIT` plays before the
+  signup wall; those persist nothing).
 - `model/src/fetch_telemetry.py` selects from the **`v_training_segments`** view with the
-  service key; `model/src/features.py` reads `trajectory` columnar (`_coerce_columns`).
+  service key. The view now emits the **canonical** `subject_id` (`merged_into` collapsed)
+  plus `board_trajectory`/`duration_ms`, and runs `security_invoker`.
 
-**This requires Anonymous Sign-Ins enabled in the Supabase dashboard** (Authentication →
-Sign In / Providers). Without it, `signInAnonymously()` fails, `supabase.js` logs one
-warning naming the toggle, and rows are dropped — the game still runs. `sessions.ended_at`
-is never written: there is no update policy, by design (append-only).
+**This requires the Email provider enabled in the Supabase dashboard**, and for instant play
+"Confirm email" disabled (Authentication → Providers → Email) — otherwise a new signup has no
+session until the emailed link is clicked, and its first session cannot be saved. With no
+credentials or no signed-in account the game still runs and simply drops rows.
+`sessions.ended_at` and `poll_hz` are never written by the client: there is no update policy
+(append-only), and both are derived offline with the service key.
 
 The renamed `telemetry_logs_v1` table still holds the old flat rows; the service key can
 read it, but nothing in the app writes there any more.
@@ -231,9 +252,9 @@ settings are session-scoped while outcomes are segment-scoped:
 Three rules the v2 design encodes, worth preserving in any migration:
 
 - **`subjects.kind` is the authoritative human/synthetic label, not a per-row boolean.**
-  Bot Mode runs in a real browser, so the client genuinely produces synthetic data; the
-  way to keep it out of the human set is to run it under a subject flagged `synthetic`,
-  never to trust the client's `is_human`. `sessions.bot_mode` is a debugging hint only.
+  Synthetic reference data is produced by driving a bot in a real browser under a subject
+  provisioned server-side as `kind='synthetic'` (`kind_source='provisioned'`), never by
+  trusting a client flag. `sessions.bot_mode` is legacy and always null now.
 - **Append-only: there is no update or delete policy anywhere.** A behavioural reference
   set the account holder can rewrite is not a reference set.
 - **`segments` has no `select` policy at all.** Trajectories are the raw material of a
@@ -280,22 +301,24 @@ without teaching `_segment_features` about it silently trains on the old feature
 
 ## Verifying changes
 
-`scene.js` needs WebGL and only runs in a browser, but `game.js`, `bot.js`, `telemetry.js`
-and `target.js` are DOM-light enough to drive headlessly in Node, which is how the game
-logic has been validated (spawn distribution, hit/miss geometry, payload shape, buffer
-isolation, bot flick profiles). To do that:
+`scene.js` needs WebGL and only runs in a browser, but `game.js`, `telemetry.js`,
+`target.js` and `outbox.js` are DOM-light enough to drive headlessly in Node, which is how
+the game logic has been validated (spawn distribution, hit/miss geometry, payload shape,
+buffer isolation, outbox delivery). To do that:
 
 - Stub `globalThis.document` with `addEventListener`/`removeEventListener` that capture
-  handlers, then invoke them directly; stub `globalThis.window = { location: { search } }`
-  for `readBotMode()`. Pass plain objects for `hud` and `crosshair`.
+  handlers, then invoke them directly. Pass plain objects for `hud` and `crosshair`.
 - `supabase.js` reads `import.meta.env`, which does not exist in Node and throws. Redirect
   the module to a capturing stub with a `node:module` resolve hook rather than changing the
   source.
-- A harness outside the project cannot resolve the bare `three` specifier; import it by
-  absolute file URL to `node_modules/three/build/three.module.js`.
-- Bot timing checks must measure angular *velocity* (step ÷ elapsed) within a single flick.
-  Raw per-frame steps pooled across flicks are meaningless, since each flick covers a
-  different angle over a different duration.
+- A harness outside the project cannot resolve the bare `three` specifier. Register a
+  `node:module` resolve hook (via `register()` from an `--import`ed shim — on Windows pass it
+  a `file://` URL) that maps `three` to `node_modules/three/build/three.module.js` and any
+  `.../supabase.js` to a capturing stub; then drive `game.js` with a stub `document` that
+  records handlers by type. This is how the segment-payload shape (`engaged_index`,
+  `board_trajectory`, `duration_ms`) is validated headlessly.
+- `src/outbox.js` is pure and injectable: pass a `send`/`store` stub to check batching,
+  idempotent dedupe, retry-on-failure, keepalive, and IndexedDB replay with no browser.
 - `settings.js` needs `globalThis.window.localStorage` stubbed; a `Map` is enough.
   `createControls` needs a fake element carrying `ownerDocument` with add/removeEventListener.
 - Sensitivity has a known-good reference: Valorant sens `0.4` @ `800` DPI is `40.8 cm/360`.
@@ -305,10 +328,6 @@ Movement is best checked by driving a routine directly on **synthetic timestamps
 deterministic. Sample positions per frame, then derive speed and per-frame turn angle from
 the displacement vectors. That is how "constant speed", "smooth arcs" and "abrupt cuts"
 are verified as numbers rather than impressions.
-
-**Bot Mode aims at where a target was when the flick began**, so against the moving
-routines it will miss often. Synthetic rows are only trustworthy for the static routines
-until the bot learns to lead a target.
 
 The `model/` side needs no database to exercise: `build_features()` takes a DataFrame, so
 a handful of hand-built segment dicts (one per outcome — `hit`, `miss`, `timeout`, `track`)

@@ -2,10 +2,12 @@ import { ROUTINES } from '../routines/index.js';
 import { DIFFICULTY_LEVELS } from '../difficulty.js';
 import { createSensitivity } from '../sensitivity.js';
 
-// Owns the home and pause screens: renders the routine catalogue and settings,
-// writes every change straight back into the settings store, and switches
-// between the three screen states.
-export function createHome({ settings, onStart, onResume, onMenu }) {
+// Owns the home and pause screens: renders the routine catalogue, sensitivity
+// settings and the account panel, writes setting changes straight back into the
+// store, and gates Start on the account state. `auth` supplies the three async
+// account actions (onSignIn/onSignUp/onSignOut), each resolving to a result
+// object ({ error } / { needsConfirmation } / {}) that this module displays.
+export function createHome({ settings, auth, onStart, onResume, onMenu }) {
   const homeScreen = document.getElementById('home');
   const pauseScreen = document.getElementById('pause');
   const modeGrid = document.getElementById('mode-grid');
@@ -15,8 +17,27 @@ export function createHome({ settings, onStart, onResume, onMenu }) {
   const edpiReadout = document.getElementById('edpi-readout');
   const cm360Readout = document.getElementById('cm360-readout');
 
+  // Account panel.
+  const signedOutBlock = document.getElementById('account-signed-out');
+  const signedInBlock = document.getElementById('account-signed-in');
+  const emailInput = document.getElementById('email-input');
+  const passwordInput = document.getElementById('password-input');
+  const consentCheckbox = document.getElementById('consent-checkbox');
+  const signinButton = document.getElementById('signin-button');
+  const signupButton = document.getElementById('signup-button');
+  const signoutButton = document.getElementById('signout-button');
+  const authMessage = document.getElementById('auth-message');
+  const accountEmail = document.getElementById('account-email');
+  const startButton = document.getElementById('start-button');
+  const startNote = document.getElementById('start-note');
+
   const modeButtons = new Map();
   const difficultyButtons = new Map();
+
+  // Latest inputs to the Start gate, so a settings-only re-render does not need
+  // them threaded through.
+  let lastAuthState = { status: 'loading', email: null };
+  let lastFreeRemaining = 0;
 
   for (const routine of ROUTINES) {
     const tile = document.createElement('button');
@@ -67,7 +88,87 @@ export function createHome({ settings, onStart, onResume, onMenu }) {
   dpiInput.addEventListener('change', commit);
   sensInput.addEventListener('change', commit);
 
-  document.getElementById('start-button').addEventListener('click', onStart);
+  // --- account actions -----------------------------------------------------
+
+  function setAuthMessage(text, isError = false) {
+    authMessage.textContent = text ?? '';
+    authMessage.classList.toggle('error', isError === true && Boolean(text));
+  }
+
+  function setAuthBusy(busy) {
+    signinButton.disabled = busy;
+    signupButton.disabled = busy;
+  }
+
+  async function handleSignIn() {
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    if (email === '' || password === '') {
+      setAuthMessage('Enter your email and password.', true);
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage('Signing in…');
+    const result = await auth.onSignIn({ email, password });
+    setAuthBusy(false);
+
+    if (result && result.error) setAuthMessage(result.error, true);
+    else setAuthMessage('');
+  }
+
+  async function handleSignUp() {
+    const email = emailInput.value.trim();
+    const password = passwordInput.value;
+    if (email === '' || password === '') {
+      setAuthMessage('Enter an email and password to create an account.', true);
+      return;
+    }
+    if (consentCheckbox.checked === false) {
+      setAuthMessage('Please agree to telemetry collection before creating an account.', true);
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage('Creating your account…');
+    const result = await auth.onSignUp({ email, password });
+    setAuthBusy(false);
+
+    if (result && result.error) setAuthMessage(result.error, true);
+    else if (result && result.needsConfirmation) {
+      setAuthMessage('Account created. Check your email to confirm, then sign in.');
+    } else setAuthMessage('');
+  }
+
+  signinButton.addEventListener('click', handleSignIn);
+  signupButton.addEventListener('click', handleSignUp);
+  signoutButton.addEventListener('click', () => auth.onSignOut());
+
+  // Start is gated: signed-in players always may; signed-out players may until
+  // their free sessions run out, and those persist nothing.
+  function applyStartGate() {
+    const signedIn = lastAuthState.status === 'signed_in';
+    const loading = lastAuthState.status === 'loading';
+    const canStart = signedIn || lastFreeRemaining > 0;
+
+    startButton.disabled = loading || canStart === false;
+
+    if (loading) {
+      startNote.textContent = 'Checking your session…';
+    } else if (signedIn) {
+      startNote.textContent = 'Esc pauses. Left click to shoot.';
+    } else if (lastFreeRemaining > 0) {
+      const plural = lastFreeRemaining === 1 ? 'session' : 'sessions';
+      startNote.textContent = `${lastFreeRemaining} free ${plural} left — create an account to save your training data.`;
+    } else {
+      startNote.textContent = 'Create an account to keep training — free sessions used up.';
+    }
+  }
+
+  startButton.addEventListener('click', () => {
+    if (startButton.disabled) return;
+    onStart();
+  });
   document.getElementById('resume-button').addEventListener('click', onResume);
   document.getElementById('menu-button').addEventListener('click', onMenu);
 
@@ -83,6 +184,23 @@ export function createHome({ settings, onStart, onResume, onMenu }) {
       dpiInput.value = state.dpi;
       sensInput.value = state.sens;
       renderReadout(state.dpi, state.sens);
+    },
+
+    // Re-renders the account panel and the Start gate. Called on every auth
+    // change and whenever the free-session count moves.
+    renderAccount({ authState, freeSessionsRemaining }) {
+      lastAuthState = authState;
+      lastFreeRemaining = freeSessionsRemaining;
+
+      const signedIn = authState.status === 'signed_in';
+      signedOutBlock.classList.toggle('hidden', signedIn);
+      signedInBlock.classList.toggle('hidden', signedIn === false);
+      if (signedIn) {
+        accountEmail.textContent = authState.email ?? 'your account';
+        setAuthMessage('');
+      }
+
+      applyStartGate();
     },
 
     setScreen(screen) {

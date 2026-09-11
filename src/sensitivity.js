@@ -31,7 +31,8 @@ export function createSensitivity({ dpi, sens, countScale = 1 }) {
     // What controls.js assigns to PointerLockControls.pointerSpeed.
     pointerSpeed: radiansPerMovementUnit / CONTROLS_RADIANS_PER_UNIT,
 
-    // What bot.js inverts to turn driven rotation back into mouse deltas.
+    // Radians of camera rotation per unit of reported movement. The DPI-aware
+    // ground truth the rest of the app derives pointer speed from.
     radiansPerMovementUnit
   };
 }

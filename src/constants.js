@@ -56,8 +56,20 @@ export const FEEDBACK_FLASH_MS = 90;
 // into fixed windows of this length: one row per window, memory bounded.
 export const TRACK_WINDOW_MS = 1000;
 
-// Bot Mode flick timing. The upper bound grows with the angular distance to the
-// target, so far targets take slightly longer, as they do for a human.
-export const BOT_FLICK_MIN_MS = 150;
-export const BOT_FLICK_MAX_MS = 350;
-export const BOT_FLICK_MS_PER_RADIAN = 120;
+// Provenance stamped on every session row. app_version is injected at build
+// time from package.json (see vite.config.js); without it a change to the
+// sampler or difficulty.js silently mixes incomparable rows into one training
+// set. sampling_version tracks the shape sampleFrame() produces and must be
+// bumped whenever that shape changes — it mirrors sessions.sampling_version.
+export const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
+export const SAMPLING_VERSION = 2;
+
+// Data collection requires a real account. A visitor may play this many
+// sessions before the signup wall; those sessions persist nothing (no auth
+// session means no DB writes at all), so no anonymous rows ever reach the table.
+export const FREE_SESSION_LIMIT = 2;
+
+// The consent text version a signup agrees to, stamped on the profile (and
+// copied to the subject offline so it survives account deletion). Bump when the
+// wording materially changes so old consent is not silently treated as new.
+export const CONSENT_VERSION = 'v1-2026-09';

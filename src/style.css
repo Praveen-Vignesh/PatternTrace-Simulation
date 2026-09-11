@@ -334,3 +334,57 @@ button.secondary:hover {
 .panel.narrow h2 {
   margin-bottom: 18px;
 }
+
+button.primary:disabled,
+button.secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary:disabled:hover {
+  background: #ff5555;
+}
+
+button.secondary:disabled:hover {
+  border-color: #333333;
+}
+
+/* Account panel */
+
+.account .field {
+  margin-bottom: 10px;
+}
+
+.consent {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 12px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #9a9a9a;
+  cursor: pointer;
+}
+
+.consent input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.auth-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.auth-actions button.secondary {
+  margin-top: 0;
+}
+
+.note.error {
+  color: #ff7070;
+}
+
+#account-signed-in .muted {
+  margin-bottom: 10px;
+}
