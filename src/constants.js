@@ -77,7 +77,7 @@ export const FREE_SESSION_LIMIT = 2;
 // it is stamped on the session row as planned_duration_ms — INTENT recorded at
 // start, because the client can only write `sessions` at insert time (there is
 // no update policy). Whether the run was actually completed is derived offline.
-export const SESSION_DURATIONS_MIN = [5, 10, 15];
+export const SESSION_DURATIONS_MIN = [1, 5, 10, 15];
 export const DEFAULT_SESSION_DURATION_MIN = 10;
 export const MS_PER_MINUTE = 60000;
 
