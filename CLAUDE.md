@@ -52,7 +52,8 @@ npm run preview    # serve the built dist/ on :4173
 ```
 
 The offline pipeline is a second program with its own virtualenv and its own entry
-points (`model/README.md` has the one-time setup, including `model/.env`):
+points. Its one-time setup is a `.venv` in `model/`, `pip install -r requirements.txt`,
+and a `model/.env` copied from `model/.env.example`:
 
 ```powershell
 cd model
@@ -65,11 +66,12 @@ Both scripts are run as modules (`python -m src.x`) from `model/`, because they 
 relative imports; `python src/features.py` fails. `data/` and `models/` are gitignored —
 everything in them is regenerable.
 
-> **Pipeline status (in flux).** `model/src/` currently holds only `fetch_telemetry.py`;
-> `config.py`, `features.py` and `__init__.py` were deleted and are being rebuilt as the
-> next task. `fetch_telemetry.py` still `import`s `from .config import DATA_DIR, get_client`,
-> so it will not run until `config.py` (and the package `__init__.py`) are restored. The
-> sections below document the intended pipeline design that rebuild targets.
+> **Pipeline status: `model/src/` does not exist yet.** `model/` currently holds only
+> `.env.example`, `requirements.txt`, and the gitignored `data/` and `models/` directories.
+> There is no `model/README.md`, no `__init__.py`, no `config.py`, no `fetch_telemetry.py`
+> and no `features.py` — the whole package is the next task. The commands above and the
+> "offline pipeline" section below describe the design that rebuild targets, not code you
+> can run today. Do not cite a `model/src/*.py` file as if it exists.
 
 Windows/PowerShell is the primary dev environment; use forward slashes in code.
 
@@ -83,16 +85,36 @@ between modules. `main.js` is the only composition point: it builds the scene, c
 and HUD, injects them into `createGame()`, wires the account panel and free-session gate,
 and owns the `requestAnimationFrame` loop.
 
-**Pointer lock is the session boundary.** `PointerLockControls` `lock`/`unlock` events
-drive everything: lock switches to the PLAYING screen and calls `game.start()` with the
-active difficulty's target radius (fresh `crypto.randomUUID()` session id, HUD counters
-reset, first spawn); unlock calls `game.stop()` and shows PAUSED. Re-locking always
-starts a new session — it never resumes the old one.
+**A timed run is the session boundary; pointer lock only pauses it.** The player picks
+5/10/15 minutes on the home screen and `sessions.planned_duration_ms` records that choice.
+`main.js` holds a three-state machine (`idle | running | paused`) because the `lock`/`unlock`
+events alone can no longer say whether a lock starts a run or resumes one: lock either calls
+`game.start()` (new session row, HUD reset, first spawn) or `game.resume()` (same session,
+same `segment_index` sequence); unlock calls `game.pause()`, which freezes the clock. The run
+ends when the timer expires (`onExpire` → `finishRun()`) or the player picks "End run",
+and only then does a results screen appear. `game.stop()` no longer exists — it is
+`pause()`/`resume()`/`end()`.
+
+**Everything downstream of `game.update()` runs on the play clock** (`now - pausedTotalMs`),
+never on raw `performance.now()`. This is a correctness requirement, not telemetry hygiene:
+each routine holds its own deadline in the timestamps it was handed (`spidershot.js`'s
+`expiresAt`, `strafing.js`'s `nextChangeAt`), so a raw clock after a 40-second pause expires
+the target on the first resumed frame and writes a fabricated `timeout` row. One subtraction
+in `game.js` means no routine needs to know pausing exists.
+
+**A run reaching `SESSION_COMPLETE_FRACTION` (70%) of its planned duration counts as
+completed** — but the client cannot record that. There is no update policy on `sessions`, so
+the client stamps *intent* (`planned_duration_ms`) at insert and the verdict is **derived
+offline**, exactly as `ended_at` is. The results screen shows a live figure as *progress*,
+never as a saved record, and persists it nowhere: the offline number is computed from
+delivered segments and legitimately differs (most starkly on a free run, which writes no
+rows at all).
 
 **One row is one *segment*, not one mesh — the unified telemetry shape.** A segment is a
 span of play that closes with an `outcome`: destructible routines close on a click
 (`hit`/`miss`) or a timeout (`timeout`); tracking routines have no click, so they close every
-`TRACK_WINDOW_MS` (`track`) and once more on `stop()`. This is what makes one table fit
+`TRACK_WINDOW_MS` (`track`), and once more when the run is paused or ends. This is what
+makes one table fit
 every mode — every row carries `routine`, `difficulty`, `outcome`, the board layout at
 segment start (`targets` + `target_count`), and a per-frame stream. `beginAttempt()` opens a
 segment: stamps the clock, resets dwell, snapshots the board, and records `engaged_index`
@@ -141,14 +163,27 @@ is now produced only under a subject provisioned server-side as `kind='synthetic
 a client-controlled flag. `game.update()` samples the human's aim each frame; without a
 running session it returns immediately.
 
-**The home screen is the resting state.** `main.js` runs three screens — HOME, PLAYING,
-PAUSED. Pointer lock still bounds a session, but HOME sits in front of it: Start requests
-the lock, `Esc` unlocks into PAUSED, and PAUSED can return to HOME. `settings.js` owns
-`{dpi, sens, difficulty, routine}`, persists to localStorage, sanitises everything it
-reads back, and notifies subscribers; `src/ui/home.js` is the only module touching that DOM.
+**The home screen is the resting state.** `main.js` runs four screens — HOME, PLAYING,
+PAUSED, RESULTS. Start requests the lock, `Esc` unlocks into PAUSED (clock frozen, Resume
+continues the *same* run, "End run" finishes it), and a finished run lands on RESULTS.
+`settings.js` owns `{dpi, sens, difficulty, routine, duration}` — `duration` in **minutes**,
+converted once in `main.js`'s lock handler — persists to localStorage, sanitises everything
+it reads back, and notifies subscribers; `src/ui/home.js` is the only module touching that
+DOM.
 
 `constants.js` holds defaults and every tunable (FOV, spawn volume, flick timing). Numbers
 belong there or in `difficulty.js`, not inline.
+
+**The other markdown in this repo predates v2 and is stale — CLAUDE.md and the source are
+the authority.** `README.md` still documents Bot Mode (`?bot=linear`), the flat
+`telemetry_logs` table, a hardcoded sensitivity constant and "fire-and-forget" inserts —
+all four are gone. `TELEMETRY.md` (long, and useful for per-field semantics) still says the
+client "signs in anonymously" and needs Anonymous Sign-Ins enabled, and links
+`model/src/features.py`, which does not exist; its §3-4 are explicitly the v1 flat row,
+only §5 onward describes v2. `TELEMETRY_BY_ROUTINE.md` still references Bot Mode and calls
+`engaged_index` "0 or null". `schema.sql`'s own header comment says "Four tables" while the
+file defines five. Read them for intent, never for current behaviour, and prefer
+`src/telemetry.js` + `schema.sql` when they disagree.
 
 ## Invariants that break silently if violated
 
@@ -180,6 +215,31 @@ belong there or in `difficulty.js`, not inline.
 - **Only pass live targets to the raycaster.** Three does not skip invisible meshes, so a
   released target still in `scene.children` would register hits if it reached the ray. The
   pool keeps `active` to exactly what is on screen.
+- **Bump `SAMPLING_VERSION` whenever `sampleFrame()`'s shape _or clock meaning_ changes.**
+  It is stamped on every `sessions` row and is the only thing that stops a training pull
+  silently mixing rows produced by two different samplers. `APP_VERSION` comes free from
+  `package.json` via `vite.config.js`; `SAMPLING_VERSION` is hand-maintained in
+  `constants.js`, so it is the one that gets forgotten. It is **3**: at 3 the frame clock
+  excludes paused time, so `t` and `started_at_ms` are active-play milliseconds.
+- **A click in a tracking routine writes no row.** `trackingShot()` flashes the crosshair
+  and moves the HUD's `hits`/`attempts`, but does not close a segment, does not touch
+  `clicks`, and does not call `flushSegment` — tracking segments close only on the
+  `TRACK_WINDOW_MS` boundary, on `pause()` and on `end()`. Routing a tracking click through
+  `shoot()` would fabricate `time_to_click_ms` on a drill that has no reaction event.
+- **Never reset `segmentIndex` outside `start()`.** Resetting it on resume makes the
+  post-pause rows collide with the pre-pause ones, and delivery is an upsert with
+  `ignoreDuplicates` (ON CONFLICT DO NOTHING) — so the entire second half of every paused
+  session is dropped with no error, no warning and no retry. The loudest failure in the
+  codebase is the one that prints nothing.
+- **Only `beginAttempt()` may reopen a segment buffer; `flushSegment()` does not clear it.**
+  `segmentOpen` is what stops `pause()` and `end()` shipping the same frames twice under two
+  `segment_index` values — legal rows that no constraint catches. A destructible attempt
+  interrupted by a pause is **discarded**, never flushed: there is no honest `outcome` for
+  it, and `timeout` would fabricate a failure (and make `timeout` reachable for `flick`,
+  where it cannot occur).
+- **`SESSION_COMPLETE_FRACTION` is mirrored by the offline derivation.** Change one without
+  the other and the number the player sees disagrees with the number the pipeline records.
+  The client's verdict is display-only and must never be persisted.
 
 ## Supabase
 
@@ -208,18 +268,29 @@ belong there or in `difficulty.js`, not inline.
 - `src/game.js` opens the session on `start()` and holds `sessionIdPromise`; each
   `flushSegment` assembles its row synchronously and hands the promise to `insertSegment`,
   so the network never blocks the loop. It stamps `segment_index`, `started_at_ms`
-  (`attemptStart − sessionStartMs`), and `engaged_index` — captured at segment start as
+  (`attemptStart − sessionStartMs`, on the play clock, so paused time is excluded), and
+  `engaged_index` — captured at segment start as
   `routine.targets.indexOf(aimTarget())`, no longer hardcoded to 0. `onPointerMove`
   (not `mousemove`) drains `getCoalescedEvents()` into both the per-frame trajectory and
   the segment's raw `input_events` buffer.
 - `src/main.js` gathers the session hardware block (dpi/sens/`cm360`, `CAMERA_FOV`, a
   rolling `refresh_hz` estimate off the render loop, coarse device fingerprint, plus
-  `app_version`/`sampling_version`) and passes it to `game.start({ session })`. It also owns
-  the account panel wiring and the free-session gate (`FREE_SESSION_LIMIT` plays before the
-  signup wall; those persist nothing).
-- `model/src/fetch_telemetry.py` selects from the **`v_training_segments`** view with the
-  service key. The view now emits the **canonical** `subject_id` (`merged_into` collapsed)
-  plus `board_trajectory`/`duration_ms`, and runs `security_invoker`.
+  `app_version`/`sampling_version`) and passes it to `game.start({ session })` alongside
+  `plannedDurationMs`. It also owns the account panel wiring and the free-session gate
+  (`FREE_SESSION_LIMIT` runs before the signup wall; those persist nothing). A free run is
+  consumed **once per run**, in the `lock` handler's new-run branch — not on every lock (which
+  made pausing cost a trial) and not in `onStart` (where `requestLock` swallowing a denied
+  lock would burn one on a lock that never happened). The counter lives in localStorage and
+  is a funnel, not a boundary — the actual guarantee is "no auth session, no write".
+- **Consent is stamped after the auth session exists, never before.** `main.js` calls
+  `recordConsent()` on a successful sign-in, and on a sign-up only when a session was
+  issued (`needsConfirmation !== true`); a confirmation-gated signup is stamped on its
+  later sign-in instead. The text version is `CONSENT_VERSION` in `constants.js` — bump it
+  when the wording materially changes, or old consent is silently treated as new.
+- `model/src/fetch_telemetry.py` (**not yet written**) is to select from the
+  **`v_training_segments`** view with the service key. The view emits the **canonical**
+  `subject_id` (`merged_into` collapsed) plus `board_trajectory`/`duration_ms`, and runs
+  `security_invoker`.
 
 **This requires the Email provider enabled in the Supabase dashboard**, and for instant play
 "Confirm email" disabled (Authentication → Providers → Email) — otherwise a new signup has no
@@ -239,8 +310,8 @@ settings are session-scoped while outcomes are segment-scoped:
   it.
 - `profiles` — the `auth.users` ↔ subject link. Created by an `on_auth_user_created`
   trigger, never by the client, so nobody can attach themselves to another subject.
-- `sessions` — one pointer lock: routine, difficulty, resolved `routine_config`, and the
-  hardware block (`dpi`, `sens`, `cm_per_360`, `refresh_hz`, `poll_hz`). Those last are
+- `sessions` — one timed run: routine, difficulty, resolved `routine_config`,
+  `planned_duration_ms`, and the hardware block (`dpi`, `sens`, `cm_per_360`, `refresh_hz`, `poll_hz`). Those last are
   not optional metadata: `dx`/`dy` are raw device counts, so a cross-user model without
   them learns the hardware.
 - `segments` — one span of play, the same unit `game.js` already flushes. Adds
@@ -255,8 +326,12 @@ Three rules the v2 design encodes, worth preserving in any migration:
   Synthetic reference data is produced by driving a bot in a real browser under a subject
   provisioned server-side as `kind='synthetic'` (`kind_source='provisioned'`), never by
   trusting a client flag. `sessions.bot_mode` is legacy and always null now.
-- **Append-only: there is no update or delete policy anywhere.** A behavioural reference
-  set the account holder can rewrite is not a reference set.
+- **Append-only on every telemetry table: no update or delete policy on `subjects`,
+  `sessions`, `segments` or `session_metrics`.** A behavioural reference set the account
+  holder can rewrite is not a reference set. The one update policy in the schema is
+  `profiles update own`, and its `with check` pins `subject_id` to `current_subject_id()`
+  so only the two consent columns are actually writable — that is what `recordConsent()`
+  in `supabase.js` uses. Do not widen it.
 - **`segments` has no `select` policy at all.** Trajectories are the raw material of a
   biometric template, so an account cannot download its own reference data to replay it.
   Aggregates reach the player through `session_metrics`, and the training pull goes
@@ -335,11 +410,12 @@ is enough to check that click-only columns stay NaN off click rows and that a
 single-frame segment does not divide by zero. Pull real rows only when the question is
 about the data rather than the code.
 
-Browser-only criteria — pointer lock, `Esc` pausing, mouse feel, and rows actually landing
+Browser-only criteria — pointer lock, `Esc` freezing the countdown and Resume continuing the
+*same* run, the duration selector, the results screen, mouse feel, and rows actually landing
 in the database — still need a human to confirm.
 
 ## Conventions
 
 Commit messages follow Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`). Keep
-modules small and single-purpose; the largest is `game.js` at ~340 lines. No dead code,
+modules small and single-purpose; the largest is `game.js` at ~380 lines. No dead code,
 no TODOs left behind, no `.env.local` in git.

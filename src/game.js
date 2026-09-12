@@ -7,7 +7,8 @@ import {
   FEEDBACK_FLASH_MS,
   TRACK_WINDOW_MS,
   DEFAULT_ROUTINE,
-  DEFAULT_DIFFICULTY
+  DEFAULT_DIFFICULTY,
+  SESSION_COMPLETE_FRACTION
 } from './constants.js';
 
 const SCREEN_CENTER = new Vector2(0, 0);
@@ -28,7 +29,12 @@ function round3(value) {
 
 // Hosts whichever routine is active: it owns the session, the raycast, the HUD
 // counters and telemetry, and asks the routine what to do with a hit or a miss.
-export function createGame({ scene, camera, crosshair, hud }) {
+//
+// A session is one TIMED RUN, not one pointer lock: pause()/resume() bracket the
+// locks inside it. Everything downstream of update() runs on the play clock
+// (`now - pausedTotalMs`), so paused time is invisible to the routines, to the
+// telemetry, and to the countdown. onExpire fires when the run's time is up.
+export function createGame({ scene, camera, crosshair, hud, onExpire = () => {} }) {
   const raycaster = new Raycaster();
   const telemetry = createTelemetry();
 
@@ -39,6 +45,11 @@ export function createGame({ scene, camera, crosshair, hud }) {
   // in flight. Resolves to null when persistence is unavailable.
   let sessionIdPromise = Promise.resolve(null);
   let sessionStartMs = 0;
+  // Resets ONLY in start(), which also mints a fresh session id. Never reset it
+  // on resume: delivery is an upsert with ignoreDuplicates (ON CONFLICT DO
+  // NOTHING on unique (session_id, segment_index)), so re-used indices would
+  // collide with the pre-pause rows and be silently dropped — no error, no
+  // warning, no retry, and the whole post-resume half of the session vanishes.
   let segmentIndex = 0;
   let routineId = DEFAULT_ROUTINE;
   let difficulty = DEFAULT_DIFFICULTY;
@@ -54,6 +65,22 @@ export function createGame({ scene, camera, crosshair, hud }) {
   // sample per frame so the trajectory has a steady cadence.
   let pendingDx = 0;
   let pendingDy = 0;
+  // The run's clock. `pausedTotalMs` is subtracted from every raw timestamp to
+  // give the play clock, which is what makes pausing work at all: each routine
+  // holds its own deadline in the timestamps it was handed (spidershot's
+  // expiresAt, strafing's nextChangeAt), so a raw clock after a pause would
+  // expire a target the instant the player resumes.
+  let plannedDurationMs = 0;
+  let pausedTotalMs = 0;
+  let pauseStartedAt = 0;
+  // Active-play elapsed, frozen when the run stops, for the summary.
+  let endedAtMs = 0;
+  // Whether the open segment holds frames that have not been shipped. Guards
+  // against pause() and end() both flushing the same buffer: flushSegment()
+  // does not clear it (only beginAttempt() replaces it), so a pause followed by
+  // "Back to menu" would otherwise ship identical frames twice under two
+  // different segment_index values — legal rows no constraint catches.
+  let segmentOpen = false;
   let flashTimer = 0;
   let hits = 0;
   let attempts = 0;
@@ -62,6 +89,11 @@ export function createGame({ scene, camera, crosshair, hud }) {
 
   function pushHud() {
     hud.update({ hits, attempts, clicks, totalTimeMs });
+  }
+
+  // Raw performance.now() -> play clock. The only conversion in the module.
+  function play(rawNow) {
+    return rawNow - pausedTotalMs;
   }
 
   // The camera's absolute yaw/pitch, read off the camera quaternion — so
@@ -138,6 +170,7 @@ export function createGame({ scene, camera, crosshair, hud }) {
   function beginAttempt(now) {
     attemptStart = now;
     dwellStart = 0;
+    segmentOpen = true;
 
     // Capture which target in the snapshot is the engaged one, before any of
     // this segment's frames are sampled. targets is the routine's live active
@@ -155,6 +188,9 @@ export function createGame({ scene, camera, crosshair, hud }) {
   function flushSegment(outcome, fields = {}) {
     const frames = telemetry.frames();
     if (frames.length === 0) return;
+
+    // Shipped: the buffer is now spoken for. Only beginAttempt() reopens one.
+    segmentOpen = false;
 
     const board = telemetry.board();
     const inputs = telemetry.inputs();
@@ -270,24 +306,27 @@ export function createGame({ scene, camera, crosshair, hud }) {
     const coalesced =
       typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : null;
 
+    // event.timeStamp is on the raw performance.now() epoch, but telemetry.js
+    // subtracts a play-clock segment start from it — so it has to be converted
+    // here too, or every input_events.t is silently offset by the paused total.
     if (coalesced !== null && coalesced.length > 0) {
       for (const sample of coalesced) {
         pendingDx += sample.movementX;
         pendingDy += sample.movementY;
-        telemetry.recordInput(sample.timeStamp, sample.movementX, sample.movementY);
+        telemetry.recordInput(play(sample.timeStamp), sample.movementX, sample.movementY);
       }
       return;
     }
 
     pendingDx += event.movementX;
     pendingDy += event.movementY;
-    telemetry.recordInput(event.timeStamp, event.movementX, event.movementY);
+    telemetry.recordInput(play(event.timeStamp), event.movementX, event.movementY);
   }
 
   function onMouseDown(event) {
     if (running === false || event.button !== 0) return;
 
-    const now = performance.now();
+    const now = play(performance.now());
     if (kind === 'tracking') trackingShot(now);
     else shoot(now);
   }
@@ -298,14 +337,33 @@ export function createGame({ scene, camera, crosshair, hud }) {
     update(now) {
       if (running === false) return;
 
-      const events = routine.update(now);
+      // Everything below runs on the play clock, never on `now`.
+      const t = play(now);
+      const elapsed = t - sessionStartMs;
+
+      // Checked first, and the ordering is load-bearing rather than stylistic:
+      // onExpire() calls back into end(), which disposes the target pool, so
+      // `running` must be cleared before notifying and nothing below may touch
+      // routine.* afterwards. Past the deadline nothing may spawn or ship.
+      if (plannedDurationMs > 0 && elapsed >= plannedDurationMs) {
+        running = false;
+        // Frozen here, not in end(): end() can no longer tell that the run was
+        // live, and a stale endedAtMs would report a finished run as 0 played.
+        endedAtMs = elapsed;
+        onExpire();
+        return;
+      }
+
+      hud.setTimeLeft(Math.ceil((plannedDurationMs - elapsed) / 1000));
+
+      const events = routine.update(t);
       if (events.expired > 0) {
         // The clock took the target. It counts against accuracy, and its search
         // trajectory is a labeled failure worth keeping — so the segment is
         // shipped as a timeout before re-arming, without counting a click.
         attempts += events.expired;
         flushSegment('timeout');
-        beginAttempt(now);
+        beginAttempt(t);
         pushHud();
       }
 
@@ -313,18 +371,18 @@ export function createGame({ scene, camera, crosshair, hud }) {
       const dy = pendingDy;
       pendingDx = 0;
       pendingDy = 0;
-      sampleFrame(now, dx, dy);
+      sampleFrame(t, dx, dy);
 
       // Tracking has no click to end a segment, so cut it into fixed windows:
       // one row per window keeps the buffer bounded and the rows uniform.
-      if (kind === 'tracking' && now - attemptStart >= TRACK_WINDOW_MS) {
+      if (kind === 'tracking' && t - attemptStart >= TRACK_WINDOW_MS) {
         flushSegment('track', { targetDistance: engagedDistance() });
-        beginAttempt(now);
+        beginAttempt(t);
       }
     },
 
-    // A fresh routine is built per session, so a mode or difficulty change on
-    // the home screen always takes effect on the next start.
+    // Opens a new timed run. A fresh routine is built per session, so a mode or
+    // difficulty change on the home screen always takes effect on the next one.
     start(options = {}) {
       routineId = options.routineId ?? DEFAULT_ROUTINE;
       difficulty = options.difficulty ?? DEFAULT_DIFFICULTY;
@@ -334,6 +392,13 @@ export function createGame({ scene, camera, crosshair, hud }) {
       routine = createRoutine(routineId, { scene, camera, config });
       kind = routine.kind ?? 'destructible';
 
+      plannedDurationMs = options.plannedDurationMs ?? 0;
+      // Raw and play clocks coincide at start, since nothing is paused yet.
+      pausedTotalMs = 0;
+      pauseStartedAt = 0;
+      endedAtMs = 0;
+      segmentOpen = false;
+
       const now = performance.now();
       sessionStartMs = now;
       segmentIndex = 0;
@@ -341,11 +406,13 @@ export function createGame({ scene, camera, crosshair, hud }) {
       // Open the session row. Its id is awaited by every segment insert, so the
       // network round-trip never blocks the game loop. options.session carries
       // the hardware block (dpi/sens/cm360, fov, refresh, device) from main.js.
+      // It is NOT reassigned on pause/resume: one run is one session row.
       sessionIdPromise = insertSession(
         buildSessionPayload({
           routine: routineId,
           difficulty,
           routineConfig: config,
+          plannedDurationMs,
           ...(options.session ?? {})
         })
       );
@@ -357,6 +424,7 @@ export function createGame({ scene, camera, crosshair, hud }) {
       pendingDx = 0;
       pendingDy = 0;
       pushHud();
+      hud.setTimeLeft(Math.ceil(plannedDurationMs / 1000));
 
       running = true;
       document.addEventListener('pointermove', onPointerMove);
@@ -365,17 +433,88 @@ export function createGame({ scene, camera, crosshair, hud }) {
       beginAttempt(now);
     },
 
-    stop() {
+    // Pointer lock lost. The run is suspended, not ended: the clock freezes and
+    // resume() picks the same session up where it left off.
+    pause() {
+      if (running === false) return;
+
       running = false;
+      pauseStartedAt = performance.now();
+      endedAtMs = play(pauseStartedAt) - sessionStartMs;
+      // Counts accumulated since the last rendered frame belong to play that
+      // already happened; letting them land on the first resumed frame would
+      // record a phantom jump across the seam.
+      pendingDx = 0;
+      pendingDy = 0;
       document.removeEventListener('pointermove', onPointerMove);
 
-      if (routine !== null) {
-        // A tracking session may hold an unflushed partial window — keep it, or
-        // a no-click drill would write nothing at all. Flush before disposing,
-        // while the target still exists.
-        if (kind === 'tracking') flushSegment('track', { targetDistance: engagedDistance() });
-        routine.stop();
+      // A tracking window in progress is a legitimate `track` row — same flush
+      // the old stop() did. A destructible attempt in progress is NOT: it has no
+      // outcome, and closing it as 'timeout' would fabricate a failed attempt
+      // (and make timeout reachable for flick, where it cannot occur). It is
+      // discarded — resume()'s beginAttempt() allocates fresh buffers.
+      if (kind === 'tracking' && segmentOpen) {
+        flushSegment('track', { targetDistance: engagedDistance() });
       }
+    },
+
+    // Pointer lock regained. Absorbs the pause into the offset so the play clock
+    // continues exactly where it stopped.
+    resume() {
+      if (running === true || routine === null) return;
+
+      pausedTotalMs += performance.now() - pauseStartedAt;
+      running = true;
+      document.addEventListener('pointermove', onPointerMove);
+      // segmentIndex and sessionIdPromise are deliberately untouched.
+      beginAttempt(play(performance.now()));
+    },
+
+    // Ends the run for good and returns its summary, or null if already ended.
+    end() {
+      if (routine === null) return null;
+
+      // Only a still-running run needs its clock read: pause() froze endedAtMs,
+      // and so did the expiry branch in update(), which has already cleared
+      // `running` by the time it calls back in here.
+      if (running) endedAtMs = play(performance.now()) - sessionStartMs;
+      running = false;
+      // A no-op when pause() already removed it.
+      document.removeEventListener('pointermove', onPointerMove);
+
+      // segmentOpen — not "was it running" — is what stops the same buffer
+      // shipping twice: flushSegment() does not clear it, so a pause that
+      // already shipped this window leaves nothing here to ship.
+      if (kind === 'tracking' && segmentOpen) {
+        flushSegment('track', { targetDistance: engagedDistance() });
+      }
+
+      routine.stop();
+      routine = null;
+      hud.setTimeLeft(0);
+
+      const activeMs = Math.max(0, Math.round(endedAtMs));
+
+      return {
+        routineId,
+        difficulty,
+        plannedMs: plannedDurationMs,
+        activeMs,
+        hits,
+        attempts,
+        clicks,
+        totalTimeMs,
+        // Shown to the player as progress, never persisted: the offline verdict
+        // is computed from delivered segments and is the only record.
+        completed:
+          plannedDurationMs > 0 && activeMs >= plannedDurationMs * SESSION_COMPLETE_FRACTION
+      };
+    },
+
+    // Frozen while paused, because the play clock is.
+    remainingMs() {
+      const elapsed = running ? play(performance.now()) - sessionStartMs : endedAtMs;
+      return Math.max(0, plannedDurationMs - elapsed);
     }
   };
 }

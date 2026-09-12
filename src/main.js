@@ -24,7 +24,8 @@ import {
   CAMERA_FOV,
   APP_VERSION,
   SAMPLING_VERSION,
-  FREE_SESSION_LIMIT
+  FREE_SESSION_LIMIT,
+  MS_PER_MINUTE
 } from './constants.js';
 
 const crosshair = document.getElementById('crosshair');
@@ -37,7 +38,27 @@ let sensitivity = createSensitivity({ ...settings.get(), countScale: MOUSE_COUNT
 const controls = createControls(camera, document.body, sensitivity);
 const hud = createHud();
 
-const game = createGame({ scene, camera, crosshair, hud });
+const game = createGame({ scene, camera, crosshair, hud, onExpire: () => finishRun() });
+
+// idle | running | paused. Pointer lock is no longer the session boundary, so
+// the lock/unlock events alone cannot say whether a lock starts a run or resumes
+// one — and an unlock we caused ourselves must not reopen the pause screen.
+let runState = 'idle';
+
+// Ends the run for good: freezes the summary, ships what is buffered, drops the
+// pointer lock and shows the results. runState is cleared BEFORE unlocking,
+// because exitPointerLock() fires its `unlock` event in a later task and that
+// handler would otherwise replace the results screen with the pause screen.
+function finishRun() {
+  if (runState === 'idle') return;
+
+  runState = 'idle';
+  const summary = game.end();
+  flushTelemetry();
+  controls.unlock();
+  home.renderResults(summary);
+  home.setScreen('results');
+}
 
 // ---------------------------------------------------------------------------
 // Accounts and free sessions
@@ -106,6 +127,7 @@ const home = createHome({
   },
   onStart: gatedLock,
   onResume: gatedLock,
+  onEndRun: finishRun,
   onMenu: () => home.setScreen('home')
 });
 
@@ -130,7 +152,7 @@ home.setScreen('home');
 initTelemetryOutbox();
 
 // Rolling refresh-rate estimate, sampled off the render loop (which runs on the
-// home screen too), so a session opened at pointer lock already has a value. The
+// home screen too), so a run already has a value the moment it starts. The
 // sessions row stores it because per-frame cadence scales with refresh_hz.
 let lastFrameTs = 0;
 let fpsEstimate = 0;
@@ -184,31 +206,52 @@ function sessionInfo() {
 }
 
 controls.addEventListener('lock', () => {
-  const { routine, difficulty } = settings.get();
+  // Re-locking mid-run resumes it. The run keeps its session row, its segment
+  // ordering and its clock; only the pause offset moves.
+  if (runState === 'paused') {
+    runState = 'running';
+    game.resume();
+    home.setScreen('playing');
+    return;
+  }
+  if (runState === 'running') return;
+
+  const { routine, difficulty, duration } = settings.get();
   const signedIn = authState.status === 'signed_in';
 
-  // A signed-out player spends one free session here; it persists nothing since
-  // insertSession() has no subject to attach to.
+  // A signed-out player spends one free run here — once per RUN, not per lock,
+  // so pausing no longer costs them a second one. Consumed in this handler
+  // rather than in onStart because requestLock() swallows a denied lock, and
+  // consuming earlier would burn a run on a lock that never happened. It
+  // persists nothing regardless: insertSession() has no subject to attach to.
   if (signedIn === false) {
     consumeFreeSession();
     home.renderAccount({ authState, freeSessionsRemaining: freeSessionsRemaining() });
   }
 
+  runState = 'running';
   home.setScreen('playing');
-  hud.setMode(routineById(routine).name + ' · ' + difficulty);
+  hud.setMode(`${routineById(routine).name} · ${difficulty} · ${duration} min`);
   game.start({
     routineId: routine,
     difficulty,
     config: configFor(routine, difficulty),
-    session: sessionInfo()
+    session: sessionInfo(),
+    plannedDurationMs: duration * MS_PER_MINUTE
   });
 });
 
 controls.addEventListener('unlock', () => {
-  game.stop();
+  // Our own unlock from finishRun() lands here too, after runState is already
+  // idle — ignoring it is what keeps the results screen up.
+  if (runState !== 'running') return;
+
+  runState = 'paused';
+  game.pause();
   // Push whatever the session buffered promptly, rather than waiting for the
   // debounce or the next page load.
   flushTelemetry();
+  home.renderPause({ remainingMs: game.remainingMs() });
   home.setScreen('paused');
 });
 

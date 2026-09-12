@@ -18,8 +18,13 @@ npm install
 ## Supabase setup
 
 1. Create a Supabase project.
-2. Open the SQL editor and run the contents of `schema.sql`. It creates the
-   `telemetry_logs` table and the anon insert policy.
+2. Open the SQL editor and run the contents of `schema.sql`. It creates the five
+   v2 tables (`subjects`, `profiles`, `sessions`, `segments`, `session_metrics`),
+   the signup trigger, and the append-only RLS policies. `anon` gets nothing:
+   data is only ever written for a signed-in account.
+   In **Authentication -> Providers -> Email**, keep the Email provider enabled;
+   for instant play also turn "Confirm email" off, or a new account has no
+   session until the emailed link is clicked and its first run cannot be saved.
 3. Copy `.env.example` to `.env.local` and fill in your project URL and anon key:
 
 ```powershell
@@ -47,8 +52,12 @@ warning and drops telemetry instead of persisting it.
 npm run dev
 ```
 
-Open http://localhost:5173/, click to start, and left-click to shoot. `Esc`
-unlocks the pointer and pauses; clicking again starts a new session.
+Open http://localhost:5173/, pick a routine, a difficulty and a session length
+(5, 10 or 15 minutes), then press Start and left-click to shoot. `Esc` releases
+the pointer and **pauses the countdown**; resuming continues the same run, so a
+run spans as many pointer locks as you like. The run ends when its timer expires
+or you pick "End run", and a results screen reports how much of it you played —
+70% or more counts as a completed session.
 
 ## Build
 
@@ -62,29 +71,17 @@ The static bundle is emitted to `dist/`. Preview it with:
 npm run preview
 ```
 
-## Bot Mode
+## Synthetic data
 
-Bot Mode replaces the player with a programmatic driver that flicks to each
-target and clicks it, to generate labeled non-human telemetry. It is hidden:
-enable it with a query parameter.
-
-```
-http://localhost:5173/?bot=linear
-http://localhost:5173/?bot=smoothed
-```
-
-- `linear` — constant angular velocity straight to the target, zero jerk.
-- `smoothed` — cubic Bezier ease-in-out, smooth acceleration and deceleration.
-
-Click once to lock the pointer, then the bot plays on its own; real mouse
-movement and clicks are ignored while it runs. Flick duration is randomized per
-attempt and stretches slightly with angular distance. Rows from Bot Mode carry
-`is_human = false` and `bot_mode = 'linear'` or `'smoothed'`; every human row is
-`is_human = true` with a null `bot_mode`.
+There is no in-browser Bot Mode — `?bot=` and `bot.js` were removed. A client
+flag is not a trustworthy label, so synthetic reference data is produced by
+driving a bot in a real browser under a subject provisioned server-side as
+`kind='synthetic'`. The human/synthetic label lives on `subjects.kind`, which no
+client can write.
 
 ## Telemetry
 
-One row in `telemetry_logs` is one **segment** of play — a shape that fits every
+One row in `segments` is one **segment** of play — a shape that fits every
 routine. A segment closes with an `outcome`:
 
 - `hit` / `miss` — a click in a destructible routine (flick, gridshot,
@@ -92,7 +89,7 @@ routine. A segment closes with an `outcome`:
 - `timeout` — a spidershot target expired before it was clicked; the failed
   attempt is kept, not discarded.
 - `track` — a tracking routine (strafing) has no click, so it is logged in fixed
-  ~1-second windows and once more when the session ends.
+  ~1-second windows, and once more when the run is paused or ends.
 
 Every row carries the session id, the `routine` and `difficulty` it came from,
 the `outcome`, the number of targets on screen and their layout at segment start
@@ -109,14 +106,16 @@ sensitivity); `yaw`/`pitch` are the camera's resulting angles in radians, which
 are DPI-independent and the better signal for aim analysis or bot detection;
 `tx`/`ty`/`tz` are the engaged target's world position that frame — so tracking
 error is recoverable even while the target moves; and `on` is whether the
-crosshair was over a target that frame. Inserts are fire-and-forget: failures are
-logged to the console and never interrupt play.
+crosshair was over a target that frame. Delivery goes through a durable outbox
+(`src/outbox.js`): batched, retried with backoff, mirrored to IndexedDB, and
+replayed on the next page load, so a network blip never loses recorded play.
 
 ## Notes
 
-- Sensitivity is a hardcoded constant in `src/constants.js`; there is no UI for
-  it, and no smoothing or acceleration is applied to mouse input.
+- Sensitivity is set on the home screen (mouse DPI + in-game sens on the Valorant
+  scale) and persists to localStorage; `constants.js` only holds the defaults. No
+  smoothing or acceleration is ever applied to mouse input.
 - Targets spawn in a 3D volume, so distance varies per attempt. Target radius is
   fixed in world space, which means far targets really are harder to hit.
-- HUD counters are per session: they reset each time the pointer re-locks, which
-  is also when a new `session_id` is generated.
+- HUD counters are per run: they reset when a run starts, which is also when a
+  new `session_id` is generated. Pausing and resuming keeps both.

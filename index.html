@@ -1,101 +1,123 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Aim Trainer</title>
-  </head>
-  <body>
-    <canvas id="scene"></canvas>
-    <div id="crosshair"></div>
-    <div id="hud">
-      <div class="hud-row hud-mode-row"><span class="hud-label">Mode</span><span id="hud-mode">&mdash;</span></div>
-      <div class="hud-row"><span class="hud-label">Score</span><span id="hud-score">0</span></div>
-      <div class="hud-row"><span class="hud-label">Attempts</span><span id="hud-attempts">0</span></div>
-      <div class="hud-row"><span class="hud-label">Accuracy</span><span id="hud-accuracy">0%</span></div>
-      <div class="hud-row"><span class="hud-label">Avg time</span><span id="hud-avg-time">0 ms</span></div>
-    </div>
 
-    <div id="home" class="screen">
-      <div class="panel">
-        <header class="panel-head">
-          <h1>Aim Trainer</h1>
-          <p class="muted">Pick a routine, set your sensitivity, and go.</p>
-        </header>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aim Trainer</title>
+</head>
 
-        <section id="account-section" class="account">
-          <h2>Account</h2>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="crosshair"></div>
+  <div id="hud">
+    <div class="hud-row hud-mode-row"><span class="hud-label">Mode</span><span id="hud-mode">&mdash;</span></div>
+    <div class="hud-row"><span class="hud-label">Time</span><span id="hud-time-left">&mdash;</span></div>
+    <div class="hud-row"><span class="hud-label">Score</span><span id="hud-score">0</span></div>
+    <div class="hud-row"><span class="hud-label">Attempts</span><span id="hud-attempts">0</span></div>
+    <div class="hud-row"><span class="hud-label">Accuracy</span><span id="hud-accuracy">0%</span></div>
+    <div class="hud-row"><span class="hud-label">Avg time</span><span id="hud-avg-time">0 ms</span></div>
+  </div>
 
-          <div id="account-signed-out">
-            <div class="field">
-              <label for="email-input">Email</label>
-              <input id="email-input" type="email" autocomplete="email" placeholder="you@example.com" />
-            </div>
-            <div class="field">
-              <label for="password-input">Password</label>
-              <input id="password-input" type="password" autocomplete="current-password" placeholder="At least 6 characters" />
-            </div>
-            <label class="consent">
-              <input id="consent-checkbox" type="checkbox" />
-              <span>I agree to my aim telemetry being collected and used for research.</span>
-            </label>
-            <div class="auth-actions">
-              <button id="signin-button" class="secondary">Sign in</button>
-              <button id="signup-button" class="primary">Create account</button>
-            </div>
-            <p id="auth-message" class="note" role="alert"></p>
-          </div>
+  <div id="home" class="screen">
+    <div class="panel">
+      <header class="panel-head">
+        <h1>Aim Trainer</h1>
+        <p class="muted">Pick a routine, set your sensitivity, and go.</p>
+      </header>
 
-          <div id="account-signed-in" class="hidden">
-            <p class="muted">Signed in as <strong id="account-email">&mdash;</strong></p>
-            <button id="signout-button" class="secondary">Sign out</button>
-          </div>
-        </section>
+      <section id="account-section" class="account">
+        <h2>Account</h2>
 
-        <section>
-          <h2>Routine</h2>
-          <div id="mode-grid" class="mode-grid"></div>
-        </section>
-
-        <section>
-          <h2>Difficulty</h2>
-          <div id="difficulty-row" class="segmented"></div>
-        </section>
-
-        <section>
-          <h2>Sensitivity</h2>
+        <div id="account-signed-out">
           <div class="field">
-            <label for="dpi-input">Mouse DPI</label>
-            <input id="dpi-input" type="number" min="100" max="32000" step="50" />
+            <label for="email-input">Email</label>
+            <input id="email-input" type="email" autocomplete="email" placeholder="you@example.com" />
           </div>
           <div class="field">
-            <label for="sens-input">In-game sens <span class="muted">(Valorant scale)</span></label>
-            <input id="sens-input" type="number" min="0.01" max="10" step="0.01" />
+            <label for="password-input">Password</label>
+            <input id="password-input" type="password" autocomplete="current-password"
+              placeholder="At least 6 characters" />
           </div>
-          <div class="readout">
-            <div><span class="muted">eDPI</span><strong id="edpi-readout">&mdash;</strong></div>
-            <div><span class="muted">cm / 360&deg;</span><strong id="cm360-readout">&mdash;</strong></div>
+          <label class="consent">
+            <input id="consent-checkbox" type="checkbox" />
+            <span>I agree to my aim telemetry being collected and used for research.</span>
+          </label>
+          <div class="auth-actions">
+            <button id="signin-button" class="secondary">Sign in</button>
+            <button id="signup-button" class="primary">Create account</button>
           </div>
-          <p class="note">
-            Turn a measured 360&deg; on your mousepad. If the distance disagrees with the
-            figure above, correct <code>MOUSE_COUNT_SCALE</code> in <code>constants.js</code>.
-          </p>
-        </section>
+          <p id="auth-message" class="note" role="alert"></p>
+        </div>
 
-        <button id="start-button" class="primary">Start</button>
-        <p id="start-note" class="note">Esc pauses. Left click to shoot.</p>
-      </div>
+        <div id="account-signed-in" class="hidden">
+          <p class="muted">Signed in as <strong id="account-email">&mdash;</strong></p>
+          <button id="signout-button" class="secondary">Sign out</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Routine</h2>
+        <div id="mode-grid" class="mode-grid"></div>
+      </section>
+
+      <section>
+        <h2>Difficulty</h2>
+        <div id="difficulty-row" class="segmented"></div>
+      </section>
+
+      <section>
+        <h2>Session length</h2>
+        <div id="duration-row" class="segmented"></div>
+      </section>
+
+      <section>
+        <h2>Sensitivity</h2>
+        <div class="field">
+          <label for="dpi-input">Mouse DPI</label>
+          <input id="dpi-input" type="number" min="100" max="32000" step="50" />
+        </div>
+        <div class="field">
+          <label for="sens-input">In-game sens</label>
+          <input id="sens-input" type="number" min="0.01" max="10" step="0.01" />
+        </div>
+        <div class="readout">
+          <div><span class="muted">eDPI</span><strong id="edpi-readout">&mdash;</strong></div>
+          <div><span class="muted">cm / 360&deg;</span><strong id="cm360-readout">&mdash;</strong></div>
+        </div>
+
+      </section>
+
+      <button id="start-button" class="primary">Start</button>
+      <p id="start-note" class="note">Esc pauses the clock. Left click to shoot.</p>
     </div>
+  </div>
 
-    <div id="pause" class="screen hidden">
-      <div class="panel narrow">
-        <h2>Paused</h2>
-        <button id="resume-button" class="primary">Resume</button>
-        <button id="menu-button" class="secondary">Back to menu</button>
-        <p class="note">Resuming starts a new session.</p>
-      </div>
+  <div id="pause" class="screen hidden">
+    <div class="panel narrow">
+      <h2>Paused</h2>
+      <button id="resume-button" class="primary">Resume</button>
+      <button id="menu-button" class="secondary">End run</button>
+      <p class="note">
+        <span id="pause-time-left">&mdash;</span> left. Resuming continues this session.
+      </p>
     </div>
+  </div>
 
-    <script type="module" src="/src/main.js"></script>
-  </body>
+  <div id="results" class="screen hidden">
+    <div class="panel narrow">
+      <h2>Run finished</h2>
+      <div class="field"><span class="muted">Routine</span><strong id="result-routine">&mdash;</strong></div>
+      <div class="field"><span class="muted">Played</span><strong id="result-time">&mdash;</strong></div>
+      <div class="field"><span class="muted">Score</span><strong id="result-score">&mdash;</strong></div>
+      <div class="field"><span class="muted">Accuracy</span><strong id="result-accuracy">&mdash;</strong></div>
+      <div class="field"><span class="muted">Avg time</span><strong id="result-avg-time">&mdash;</strong></div>
+      <button id="results-menu-button" class="primary">Back to menu</button>
+      <p id="result-note" class="note"></p>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+
 </html>

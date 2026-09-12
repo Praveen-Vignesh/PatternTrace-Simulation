@@ -92,26 +92,42 @@ body {
   color: #ff8080;
 }
 
+/* Utility */
+
+/* .hidden is a general-purpose toggle target (home.js also flips it on the
+   account-signed-in/-out panels, which are plain divs, not .screen elements)
+   — it must stand alone, not be scoped to .screen. */
+.hidden {
+  display: none;
+}
+
 /* Screens */
 
 .screen {
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
   justify-content: center;
   padding: 24px;
   overflow-y: auto;
   background: rgba(10, 10, 10, 0.86);
 }
 
+/* Higher specificity than the bare .hidden above, so this wins regardless of
+   source order — .screen's own display: flex must never out-cascade it. */
 .screen.hidden {
   display: none;
 }
 
+/* margin: auto centres the panel, NOT align-items: center on .screen. With a
+   scroll container, centring a child taller than the viewport pushes its top
+   above the scroll origin, where it can never be scrolled back to — which hid
+   the email and password fields entirely on short windows. Auto margins centre
+   when the panel fits and collapse safely when it does not. */
 .panel {
   width: 100%;
   max-width: 640px;
+  margin: auto;
   border: 1px solid #333333;
   background: #161616;
   padding: 28px;
@@ -271,6 +287,15 @@ code {
 .field input:focus {
   outline: none;
   border-color: #ff5555;
+}
+
+/* The 120px above is sized for the numeric DPI/sens inputs. An email address
+   does not fit in it, so the account fields take the rest of the row instead.
+   min-width: 0 stops the flex item refusing to shrink below its input default. */
+.account .field input {
+  width: auto;
+  flex: 1;
+  min-width: 0;
 }
 
 .readout {

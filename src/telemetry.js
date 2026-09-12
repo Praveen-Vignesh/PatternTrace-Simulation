@@ -8,8 +8,11 @@
 // for every mode from one uniform shape.
 //
 // Session-scoped metadata (hardware, sensitivity, routine) lives on the
-// `sessions` row, built once per pointer lock; per-frame play lives on the
+// `sessions` row, built once per timed run; per-frame play lives on the
 // `segments` rows, one per closed segment. See schema.sql for why the split.
+//
+// Every timestamp reaching this module is on the PLAY clock — paused time is
+// already subtracted by game.js — so nothing here needs to know about pausing.
 
 // Camera pitch/yaw are stored to this many decimal places of a radian
 // (~0.0006°); target positions to this many of a world unit (~1 mm). Enough to
@@ -202,7 +205,7 @@ function inputsToColumnar(inputs) {
   return columns;
 }
 
-// Assembles the `sessions` row: everything scoped to one pointer lock.
+// Assembles the `sessions` row: everything scoped to one timed run.
 // app_version and sampling_version are sent explicitly (not left to the table
 // defaults) so a row records the exact code that produced it — the whole point
 // of the columns. poll_hz stays null: it is derived offline from input_events.
@@ -211,6 +214,7 @@ export function buildSessionPayload({
   routine,
   difficulty,
   routineConfig = null,
+  plannedDurationMs = null,
   dpi,
   sens,
   cmPer360 = null,
@@ -230,6 +234,9 @@ export function buildSessionPayload({
     routine,
     difficulty,
     routine_config: routineConfig,
+    // Intent recorded at start. Sent unconditionally — the column is nullable,
+    // so unlike sampling_version there is no table default to protect.
+    planned_duration_ms: plannedDurationMs,
     dpi,
     sens,
     cm_per_360: cmPer360,

@@ -1,17 +1,23 @@
-import { ROUTINES } from '../routines/index.js';
+import { ROUTINES, routineById } from '../routines/index.js';
 import { DIFFICULTY_LEVELS } from '../difficulty.js';
 import { createSensitivity } from '../sensitivity.js';
+import { formatClock } from '../hud.js';
+import { SESSION_DURATIONS_MIN, SESSION_COMPLETE_FRACTION } from '../constants.js';
 
-// Owns the home and pause screens: renders the routine catalogue, sensitivity
-// settings and the account panel, writes setting changes straight back into the
-// store, and gates Start on the account state. `auth` supplies the three async
-// account actions (onSignIn/onSignUp/onSignOut), each resolving to a result
-// object ({ error } / { needsConfirmation } / {}) that this module displays.
-export function createHome({ settings, auth, onStart, onResume, onMenu }) {
+// Owns the home, pause and results screens: renders the routine catalogue,
+// sensitivity settings and the account panel, writes setting changes straight
+// back into the store, and gates Start on the account state. `auth` supplies the
+// three async account actions (onSignIn/onSignUp/onSignOut), each resolving to a
+// result object ({ error } / { needsConfirmation } / {}) that this module
+// displays. `onEndRun` finishes a run for good; `onMenu` only changes screen.
+export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu }) {
   const homeScreen = document.getElementById('home');
   const pauseScreen = document.getElementById('pause');
+  const resultsScreen = document.getElementById('results');
+  const pauseTimeLeft = document.getElementById('pause-time-left');
   const modeGrid = document.getElementById('mode-grid');
   const difficultyRow = document.getElementById('difficulty-row');
+  const durationRow = document.getElementById('duration-row');
   const dpiInput = document.getElementById('dpi-input');
   const sensInput = document.getElementById('sens-input');
   const edpiReadout = document.getElementById('edpi-readout');
@@ -31,8 +37,17 @@ export function createHome({ settings, auth, onStart, onResume, onMenu }) {
   const startButton = document.getElementById('start-button');
   const startNote = document.getElementById('start-note');
 
+  // Results screen.
+  const resultRoutine = document.getElementById('result-routine');
+  const resultTime = document.getElementById('result-time');
+  const resultScore = document.getElementById('result-score');
+  const resultAccuracy = document.getElementById('result-accuracy');
+  const resultAvgTime = document.getElementById('result-avg-time');
+  const resultNote = document.getElementById('result-note');
+
   const modeButtons = new Map();
   const difficultyButtons = new Map();
+  const durationButtons = new Map();
 
   // Latest inputs to the Start gate, so a settings-only re-render does not need
   // them threaded through.
@@ -59,6 +74,15 @@ export function createHome({ settings, auth, onStart, onResume, onMenu }) {
     button.addEventListener('click', () => settings.update({ difficulty: level }));
     difficultyRow.appendChild(button);
     difficultyButtons.set(level, button);
+  }
+
+  for (const minutes of SESSION_DURATIONS_MIN) {
+    const button = document.createElement('button');
+    button.className = 'segment';
+    button.textContent = `${minutes} min`;
+    button.addEventListener('click', () => settings.update({ duration: minutes }));
+    durationRow.appendChild(button);
+    durationButtons.set(minutes, button);
   }
 
   function renderReadout(dpi, sens) {
@@ -156,12 +180,12 @@ export function createHome({ settings, auth, onStart, onResume, onMenu }) {
     if (loading) {
       startNote.textContent = 'Checking your session…';
     } else if (signedIn) {
-      startNote.textContent = 'Esc pauses. Left click to shoot.';
+      startNote.textContent = 'Esc pauses the clock. Left click to shoot.';
     } else if (lastFreeRemaining > 0) {
-      const plural = lastFreeRemaining === 1 ? 'session' : 'sessions';
+      const plural = lastFreeRemaining === 1 ? 'run' : 'runs';
       startNote.textContent = `${lastFreeRemaining} free ${plural} left — create an account to save your training data.`;
     } else {
-      startNote.textContent = 'Create an account to keep training — free sessions used up.';
+      startNote.textContent = 'Create an account to keep training — free runs used up.';
     }
   }
 
@@ -170,7 +194,10 @@ export function createHome({ settings, auth, onStart, onResume, onMenu }) {
     onStart();
   });
   document.getElementById('resume-button').addEventListener('click', onResume);
-  document.getElementById('menu-button').addEventListener('click', onMenu);
+  // Ends the run rather than just changing screen: leaving a paused session open
+  // would orphan it, and its telemetry would never be flushed.
+  document.getElementById('menu-button').addEventListener('click', onEndRun);
+  document.getElementById('results-menu-button').addEventListener('click', onMenu);
 
   return {
     render(state) {
@@ -179,6 +206,9 @@ export function createHome({ settings, auth, onStart, onResume, onMenu }) {
       }
       for (const [level, button] of difficultyButtons) {
         button.classList.toggle('selected', level === state.difficulty);
+      }
+      for (const [minutes, button] of durationButtons) {
+        button.classList.toggle('selected', minutes === state.duration);
       }
 
       dpiInput.value = state.dpi;
@@ -203,9 +233,40 @@ export function createHome({ settings, auth, onStart, onResume, onMenu }) {
       applyStartGate();
     },
 
+    // The pause clock is static: the countdown is frozen while paused, so this
+    // is written once on entry rather than ticking.
+    renderPause({ remainingMs }) {
+      pauseTimeLeft.textContent = formatClock(remainingMs);
+    },
+
+    // Worded as progress, never as a saved record. The authoritative completion
+    // verdict is derived offline from delivered segments and will legitimately
+    // differ — most starkly on a free run, which writes no rows at all.
+    renderResults(summary) {
+      if (summary === null) return;
+
+      const { routineId, difficulty, plannedMs, activeMs } = summary;
+      const { hits, attempts, clicks, totalTimeMs, completed } = summary;
+      const name = routineById(routineId)?.name ?? routineId;
+      const timed = clicks === 0 ? attempts : clicks;
+
+      resultRoutine.textContent = `${name} · ${difficulty}`;
+      resultTime.textContent = `${formatClock(activeMs)} of ${formatClock(plannedMs)}`;
+      resultScore.textContent = hits;
+      resultAccuracy.textContent =
+        attempts === 0 ? '0%' : `${Math.round((hits / attempts) * 100)}%`;
+      resultAvgTime.textContent = timed === 0 ? '0 ms' : `${Math.round(totalTimeMs / timed)} ms`;
+
+      const percent = Math.round(SESSION_COMPLETE_FRACTION * 100);
+      resultNote.textContent = completed
+        ? `Session complete — you passed the ${percent}% mark.`
+        : `Under the ${percent}% mark, so this run does not count as complete.`;
+    },
+
     setScreen(screen) {
       homeScreen.classList.toggle('hidden', screen !== 'home');
       pauseScreen.classList.toggle('hidden', screen !== 'paused');
+      resultsScreen.classList.toggle('hidden', screen !== 'results');
     }
   };
 }

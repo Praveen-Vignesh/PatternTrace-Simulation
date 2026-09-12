@@ -17,9 +17,9 @@ Per-segment fields (`buildSegmentPayload`, `src/telemetry.js`):
 |---|---|---|
 | `outcome` | `hit` / `miss` / `timeout` / `track` | never |
 | `trajectory` | per-frame columnar stream: `{t, dx, dy, yaw, pitch, tx, ty, tz, on}` | never (empty segments aren't shipped) |
-| `input_events` | raw sub-frame pointer samples `{t, dx, dy}` | Bot Mode, or no pointer support |
+| `input_events` | raw sub-frame pointer samples `{t, dx, dy}` | no pointer support (no coalesced-events API) |
 | `targets` + `target_count` | board layout at segment start | never |
-| `engaged_index` | which board target `aimTarget()` points at (0 or null) | empty board |
+| `engaged_index` | index into `targets` of the engaged target, captured at segment start via `routine.targets.indexOf(aimTarget())` | empty board |
 | `target_distance` | camera→target distance | context-dependent (per mode below) |
 | `time_to_click_ms` | `now − attemptStart` | non-click rows (`timeout`, `track`) |
 | `dwell_ms` | crosshair-settle → click | non-click rows, or crosshair never landed |
@@ -88,8 +88,9 @@ missing disturbs nothing (`gridshot.js`, `resolveHit`/`resolveMiss`).
 
 - **Row created:** on a **time window**, not a click. Every `TRACK_WINDOW_MS`
   the segment closes as `track` and re-opens (`game.js`, `update`); plus one
-  final `track` flush on `stop()` for the partial window. Clicks give
-  feedback/score but write **no row** (`game.js`, `trackingShot`).
+  final `track` flush for the partial window when the run is paused or ends
+  (`game.js`, `pause`/`end`). Clicks give feedback/score but write **no row**
+  (`game.js`, `trackingShot`).
 - **Telemetry emphasis:** the `trajectory` is the whole point — `yaw/pitch` vs.
   moving `tx/ty/tz` per frame gives **tracking error over time**. `on` tells you
   what fraction of the window you held the target.
@@ -126,8 +127,17 @@ missing disturbs nothing (`gridshot.js`, `resolveHit`/`resolveMiss`).
 - **Multi-target board** → gridshot, switching. Single target → flick,
   spidershot, strafing.
 
-## Bot Mode (all five)
+## Synthetic subjects (all five)
 
-The bot pulls the trigger instead of a human, `input_events` is always `null`
-(no pointer listener attached), and `dwell_ms` is usually null on bot hits since
-the synthetic flick often lands without a settle frame.
+The in-browser Bot Mode was removed. Synthetic data now comes from a bot driven
+in a real browser under a subject provisioned server-side as `kind='synthetic'`,
+so it is labelled by `subjects.kind` rather than by anything the client sends.
+`sessions.bot_mode` is legacy and always null on new rows.
+
+## Pausing (all five)
+
+A run survives `Esc`: the play clock freezes and resuming continues the same
+session. Consequences for every routine: `started_at_ms` is active-play time, so
+paused time never appears in it; a destructible attempt interrupted by a pause is
+**discarded** rather than written (there is no honest `outcome` for it); and a
+tracking window in progress is flushed as `track`, so strafing loses nothing.

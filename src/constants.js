@@ -59,15 +59,32 @@ export const TRACK_WINDOW_MS = 1000;
 // Provenance stamped on every session row. app_version is injected at build
 // time from package.json (see vite.config.js); without it a change to the
 // sampler or difficulty.js silently mixes incomparable rows into one training
-// set. sampling_version tracks the shape sampleFrame() produces and must be
-// bumped whenever that shape changes — it mirrors sessions.sampling_version.
+// set. sampling_version tracks the shape AND the clock meaning that
+// sampleFrame() produces, and must be bumped whenever either changes — it
+// mirrors sessions.sampling_version.
+//
+// 3: timed sessions. The frame clock excludes paused time, so a segment's `t`
+// and its started_at_ms are active-play milliseconds, not wall clock.
 export const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
-export const SAMPLING_VERSION = 2;
+export const SAMPLING_VERSION = 3;
 
 // Data collection requires a real account. A visitor may play this many
 // sessions before the signup wall; those sessions persist nothing (no auth
 // session means no DB writes at all), so no anonymous rows ever reach the table.
 export const FREE_SESSION_LIMIT = 2;
+
+// Fixed-duration sessions. The player picks one of these on the home screen and
+// it is stamped on the session row as planned_duration_ms — INTENT recorded at
+// start, because the client can only write `sessions` at insert time (there is
+// no update policy). Whether the run was actually completed is derived offline.
+export const SESSION_DURATIONS_MIN = [5, 10, 15];
+export const DEFAULT_SESSION_DURATION_MIN = 10;
+export const MS_PER_MINUTE = 60000;
+
+// A run reaching this fraction of its planned duration counts as completed.
+// MIRRORED by the offline derivation: change one without the other and the
+// number the player sees disagrees with the number the pipeline records.
+export const SESSION_COMPLETE_FRACTION = 0.7;
 
 // The consent text version a signup agrees to, stamped on the profile (and
 // copied to the subject offline so it survives account deletion). Bump when the

@@ -1,14 +1,18 @@
 -- Aim Trainer telemetry schema (v2 — multi-user).
 -- Run this in the Supabase SQL editor (or psql) before starting a session.
 --
--- Four tables:
---   subjects  — a pseudonymous person. Survives account deletion.
---   profiles  — the link between an auth.users account and a subject. Deleted
---               with the account, which is what anonymises the telemetry.
---   sessions  — one pointer-lock session: one routine, one difficulty, one
---               hardware configuration.
---   segments  — one span of play closing with an outcome. The unit the model
---               consumes.
+-- Five tables:
+--   subjects        — a pseudonymous person. Survives account deletion.
+--   profiles        — the link between an auth.users account and a subject.
+--                     Deleted with the account, which anonymises the telemetry.
+--   sessions        — one timed run: one routine, one difficulty, one hardware
+--                     configuration. Pointer lock only pauses it.
+--   segments        — one span of play closing with an outcome. The unit the
+--                     model consumes.
+--   session_metrics — derived aggregates, written offline with the service key.
+--
+-- Plus v_training_segments, a view (not a table) that the offline pipeline
+-- reads with the service key.
 --
 -- The split exists because hardware and settings are session-scoped, not
 -- segment-scoped. Storing dpi/sens/refresh on every segment row would both
@@ -136,8 +140,10 @@ $$;
 -- ---------------------------------------------------------------------------
 -- sessions
 -- ---------------------------------------------------------------------------
--- One pointer lock. A routine is built fresh per session (game.js start()), so
--- routine and difficulty are genuinely session-scoped and belong here.
+-- One timed run. A run is a fixed-length session the player chose (5/10/15 min);
+-- pointer lock only pauses and resumes it, so one session spans many locks. A
+-- routine is built fresh per session (game.js start()), so routine and
+-- difficulty are genuinely session-scoped and belong here.
 --
 -- The hardware block is not optional metadata. dx/dy are raw device counts, so
 -- they are meaningless across users without dpi; frame cadence scales with
@@ -159,6 +165,11 @@ create table if not exists public.sessions (
   -- filled offline from started_at + the last segment's (started_at_ms +
   -- trajectory tail) — a server-anchored, monotonic figure, more trustworthy
   -- than a forgeable client wall-clock. Do NOT "fix" this with an update policy.
+  --
+  -- Since sampling_version 3 that clock EXCLUDES paused time, so this is the end
+  -- of active play, not wall-clock end. A deliberate redefinition: active play
+  -- is the comparable figure, and wall-clock end is not recoverable (pause
+  -- spans are not recorded).
   ended_at timestamptz,
 
   routine text not null,
@@ -166,6 +177,16 @@ create table if not exists public.sessions (
   -- The resolved difficulty.js entry for this session, so a later retune of
   -- ROUTINE_CONFIG does not retroactively mislabel what was actually played.
   routine_config jsonb,
+
+  -- The session length the player CHOSE, stamped at insert. Intent, not outcome:
+  -- the client can only write this row at start (no update policy — see
+  -- ended_at), so whether the run was actually finished is DERIVED OFFLINE, by
+  -- comparing max(started_at_ms + duration_ms) across the session's segments
+  -- against this. A run reaching >= 70% of it counts as completed
+  -- (SESSION_COMPLETE_FRACTION in constants.js — keep the two in step).
+  -- NULL on rows written before timed sessions shipped, which is how you filter
+  -- them out of a completion cohort.
+  planned_duration_ms int,
 
   -- Sensitivity. See sensitivity.js — one value, two consumers.
   dpi int not null,
@@ -200,15 +221,27 @@ create table if not exists public.sessions (
   -- Stamp of the code that produced the session. Without it, a change to the
   -- sampler or to difficulty.js silently mixes incomparable rows into one set.
   app_version text not null default 'unknown',
-  sampling_version int not null default 2
+  sampling_version int not null default 3
 );
+
+-- Additive migration for databases created before timed sessions shipped.
+-- `create table if not exists` above is a no-op on an existing table, so the
+-- column has to be added explicitly for a re-run to upgrade in place.
+alter table public.sessions add column if not exists planned_duration_ms int;
+
+-- The default means "what this deployment's client produces". Leaving it at 2
+-- would mislabel any row inserted without the key as v2 data. Idempotent, and it
+-- does not rewrite existing rows.
+alter table public.sessions alter column sampling_version set default 3;
 
 -- ---------------------------------------------------------------------------
 -- segments
 -- ---------------------------------------------------------------------------
 -- One row is one segment, not one mesh. Destructible routines close a segment
 -- on a click (hit/miss) or a timeout; tracking routines close one every
--- TRACK_WINDOW_MS (track) and once more on stop().
+-- TRACK_WINDOW_MS (track), and once more when the run is paused or ends.
+-- A destructible attempt interrupted by a pause is DISCARDED, not written:
+-- there is no honest outcome for it, and 'timeout' would fabricate a failure.
 --
 -- Both streams are stored COLUMNAR — parallel arrays keyed by field name, not
 -- an array of per-sample objects. Roughly a third of the size (no repeated
@@ -234,8 +267,11 @@ create table if not exists public.segments (
   -- can land out of order.
   segment_index int not null,
   created_at timestamptz not null default now(),
-  -- Milliseconds from session start to segment start, from the same
-  -- performance.now() clock the frames use.
+  -- Milliseconds of ACTIVE PLAY from session start to segment start, from the
+  -- same clock the frames use. Since sampling_version 3 that clock excludes
+  -- paused time, so max(started_at_ms + duration_ms) over a session is directly
+  -- comparable to sessions.planned_duration_ms — which is what makes the
+  -- completion verdict derivable with no gap-detection heuristic.
   started_at_ms int,
 
   outcome text not null check (outcome in ('hit', 'miss', 'timeout', 'track')),
@@ -277,9 +313,11 @@ create table if not exists public.segments (
   -- checked without parsing either blob.
   frame_count int not null,
   event_count int,
-  -- Segment wall-time, lifted out of the trajectory's last `t` so "how long was
-  -- this segment" is a column query, not a blob parse. This is a per-segment
-  -- duration; whole-session end is derived offline (see sessions.ended_at).
+  -- Segment play-time, lifted out of the trajectory's last `t` so "how long was
+  -- this segment" is a column query, not a blob parse. A segment never spans a
+  -- pause (one closes at pause and a fresh one opens on resume), so this is
+  -- uncontaminated. Whole-session active play, and the completion verdict, are
+  -- derived offline (see sessions.ended_at and sessions.planned_duration_ms).
   duration_ms int,
 
   constraint segments_session_order unique (session_id, segment_index),
@@ -452,6 +490,7 @@ select
   sub.kind            as subject_kind,
   s.routine,
   s.difficulty,
+  s.planned_duration_ms,
   s.routine_config,
   s.dpi,
   s.sens,

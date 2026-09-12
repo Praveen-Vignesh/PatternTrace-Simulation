@@ -2,7 +2,9 @@ import {
   DEFAULT_DPI,
   DEFAULT_SENSITIVITY,
   DEFAULT_DIFFICULTY,
-  DEFAULT_ROUTINE
+  DEFAULT_ROUTINE,
+  DEFAULT_SESSION_DURATION_MIN,
+  SESSION_DURATIONS_MIN
 } from './constants.js';
 import { DIFFICULTY_LEVELS } from './difficulty.js';
 import { isAvailable } from './routines/index.js';
@@ -30,7 +32,14 @@ function sanitise(candidate, previous) {
     difficulty: DIFFICULTY_LEVELS.includes(candidate.difficulty)
       ? candidate.difficulty
       : DEFAULT_DIFFICULTY,
-    routine: pickRoutine(candidate.routine, previous)
+    routine: pickRoutine(candidate.routine, previous),
+    // Minutes, not milliseconds: it is what the UI shows, and the single
+    // conversion happens where the session starts. Coerced BEFORE the
+    // membership test because a hand-edited localStorage value round-trips as
+    // the string "10", which includes() would reject.
+    duration: SESSION_DURATIONS_MIN.includes(Number(candidate.duration))
+      ? Number(candidate.duration)
+      : DEFAULT_SESSION_DURATION_MIN
   };
 }
 

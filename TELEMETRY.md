@@ -81,10 +81,16 @@ silently describes the wrong rotation.
 
 ### Session boundary
 
-Pointer lock **is** the session. `lock` -> `game.start()` (fresh
-`crypto.randomUUID()`, new routine instance, counters reset). `unlock` -> `game.stop()`.
-Re-locking always starts a new session; it never resumes. A difficulty or routine
-change therefore cannot take effect mid-session.
+A **timed run** is the session; pointer lock only pauses it. The player picks 5/10/15
+minutes, stored as `sessions.planned_duration_ms`. The first `lock` -> `game.start()`
+(fresh session row, new routine instance, counters reset); `unlock` -> `game.pause()`,
+which freezes the play clock; a later `lock` -> `game.resume()`, which continues the SAME
+session, keeping its id and its `segment_index` sequence. The run ends on timer expiry or
+"End run" -> `game.end()`. A difficulty or routine change therefore cannot take effect
+mid-run.
+
+Since `sampling_version` 3 every timestamp below the render loop is on the **play clock**
+(`now - pausedTotalMs`), so paused time is excluded everywhere it appears.
 
 ### One frame, in order
 
@@ -155,7 +161,9 @@ a synthetic row cannot be contaminated.
 **One row is one _segment_, not one target.** A segment is a span of play that closes
 with an `outcome`. Destructible routines close a segment on a click (`hit`/`miss`) or a
 timeout (`timeout`); tracking routines have no click, so they close every 1000 ms
-(`track`) and once more on `stop()`. Every segment carries the board layout at segment
+(`track`), and once more when the run is paused or ends. A destructible attempt
+interrupted by a pause is discarded rather than written, because it has no honest
+`outcome`. Every segment carries the board layout at segment
 start, a per-frame stream of aim *and* world state, and — only if a click landed — the
 click-derived fields. That is what makes one table fit all five routines.
 
@@ -293,7 +301,7 @@ subjects          the pseudonymous person          survives account deletion
     ^
 profiles          login account -> person          dies with the account
     ^
-sessions          one pointer lock: one routine, one difficulty, one mouse setup
+sessions          one timed run: one routine, one difficulty, one mouse setup
     ^
 segments          one shot / one timeout / one tracking window   <- the model's unit
     ^
@@ -352,11 +360,11 @@ a user cannot attach themselves to somebody else's subject. `current_subject_id(
 `stable security definer` helper the RLS policies call, so they can read `profiles` without
 the client being granted select on it.
 
-### 5.3 `sessions` — one pointer lock
+### 5.3 `sessions` — one timed run
 
-One row every time the mouse is captured. `Esc` and re-lock makes a **new** session; it
-never resumes (§1, Session boundary). A routine is built fresh per session, so routine and
-difficulty are genuinely session-scoped and belong here.
+One row per run. `Esc` and re-lock PAUSES and RESUMES the same session (§1, Session
+boundary); only a finished run and a fresh Start make a new one. A routine is built fresh
+per session, so routine and difficulty are genuinely session-scoped and belong here.
 
 **Identity and timing**
 
@@ -418,7 +426,8 @@ its own
 |---|---|---|
 | `bot_mode` | text | Bot Mode as the client reports it (`linear`/`smoothed`). **A hint for debugging only** — client-controlled, and must never be used as a training label. Use `subjects.kind` instead |
 | `app_version` | text | stamp of the code that produced the session. Without it, a change to the sampler or to `difficulty.js` silently mixes incomparable rows into one set |
-| `sampling_version` | int | which frame-sampling format was used (currently `2`) |
+| `sampling_version` | int | which frame-sampling format was used (currently `3` — at 3 the frame clock excludes paused time) |
+| `planned_duration_ms` | int | the session length the player chose, in ms. **Intent, stamped at insert** — the client cannot write this row again, so whether the run was finished is derived offline by comparing `max(started_at_ms + duration_ms)` against it. >= 70% counts as completed. NULL on pre-timed-session rows |
 
 ### 5.4 `segments` — one moment of play
 
@@ -435,7 +444,7 @@ timeout; tracking routines close one every `TRACK_WINDOW_MS` (`track`) and once 
 | `session_id` | uuid -> `sessions` | which session it belongs to; cascades |
 | `segment_index` | int | 1st, 2nd, 3rd… within the session. Warmup, fatigue and any sequence model need ordering, and `created_at` cannot supply it: inserts are fire-and-forget and can land out of order |
 | `created_at` | timestamptz | when the database received it |
-| `started_at_ms` | int | ms from session start to segment start, from the same `performance.now()` clock the frames use |
+| `started_at_ms` | int | ms of **active play** from session start to segment start, from the same clock the frames use. Excludes paused time since `sampling_version` 3, which is what makes it directly comparable to `sessions.planned_duration_ms` |
 
 `segments_session_order` is a unique constraint on `(session_id, segment_index)` — one
 session cannot contain two segment #4s.
@@ -536,9 +545,13 @@ want them.
 Not a table — a saved query. It pre-joins `segments` -> `sessions` -> `subjects` so
 `fetch_telemetry.py` reads one flat thing and never has to join by hand or re-derive the
 label. It exposes every segment column, the session columns that matter for normalisation
-(`routine`, `difficulty`, `routine_config`, `dpi`, `sens`, `cm_per_360`, `fov_deg`,
-`refresh_hz`, `poll_hz`, `device_fingerprint`, `app_version`, `sampling_version`, and
-`started_at` as `session_started_at`), plus `subject_id`, `subject_kind` and `is_human`.
+(`routine`, `difficulty`, `planned_duration_ms`, `routine_config`, `dpi`, `sens`,
+`cm_per_360`, `fov_deg`, `refresh_hz`, `poll_hz`, `device_fingerprint`, `app_version`,
+`sampling_version`, and `started_at` as `session_started_at`), plus `subject_id`,
+`subject_kind` and `is_human`.
+
+`planned_duration_ms` is what makes session completion derivable: compare it against
+`max(started_at_ms + duration_ms)` per session, and >= 70% is a completed run.
 
 `is_human` comes from `subjects.kind`, which the client cannot write — unlike the v1
 per-row boolean, which it could. Access is revoked from **both** `anon` and
