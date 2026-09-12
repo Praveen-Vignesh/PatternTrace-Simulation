@@ -234,6 +234,18 @@ alter table public.sessions add column if not exists planned_duration_ms int;
 -- does not rewrite existing rows.
 alter table public.sessions alter column sampling_version set default 3;
 
+-- dpi/sens feed sensitivity.js's cm_per_360 derivation directly; a zero or
+-- negative value would divide-by-zero or silently invert it downstream.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'sessions_dpi_positive') then
+    alter table public.sessions add constraint sessions_dpi_positive check (dpi > 0);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'sessions_sens_positive') then
+    alter table public.sessions add constraint sessions_sens_positive check (sens > 0);
+  end if;
+end $$;
+
 -- ---------------------------------------------------------------------------
 -- segments
 -- ---------------------------------------------------------------------------
@@ -339,6 +351,30 @@ create table if not exists public.segments (
 alter table public.segments add column if not exists board_trajectory jsonb;
 alter table public.segments add column if not exists duration_ms int;
 
+-- Sanity bounds on fields the model reads directly. None of these should ever
+-- be violated by the client as it stands today; they exist so a bug (or a
+-- request crafted by hand against the REST API) can't quietly seed the
+-- training set with a negative duration or a zero-frame segment instead of
+-- being rejected at write time. A null still satisfies each of these (Postgres
+-- CHECK is satisfied unless the expression is false), so click-only fields
+-- stay untouched on non-click rows.
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'segments_frame_count_positive') then
+    alter table public.segments add constraint segments_frame_count_positive check (frame_count > 0);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'segments_target_count_positive') then
+    alter table public.segments add constraint segments_target_count_positive check (target_count > 0);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'segments_segment_index_nonneg') then
+    alter table public.segments add constraint segments_segment_index_nonneg check (segment_index >= 0);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'segments_durations_nonneg') then
+    alter table public.segments add constraint segments_durations_nonneg
+      check (time_to_click_ms >= 0 and dwell_ms >= 0 and duration_ms >= 0);
+  end if;
+end $$;
+
 -- ---------------------------------------------------------------------------
 -- session_metrics
 -- ---------------------------------------------------------------------------
@@ -369,8 +405,10 @@ create index if not exists sessions_subject_started_idx
   on public.sessions (subject_id, started_at desc);
 create index if not exists sessions_routine_difficulty_idx
   on public.sessions (routine, difficulty);
-create index if not exists segments_session_idx
-  on public.segments (session_id, segment_index);
+-- No separate (session_id, segment_index) index: segments_session_order's
+-- unique constraint above already is that index; a second one would only add
+-- write overhead with no query it serves that the first doesn't.
+drop index if exists public.segments_session_idx;
 create index if not exists segments_outcome_idx
   on public.segments (outcome);
 create index if not exists subjects_kind_idx
@@ -396,7 +434,12 @@ alter table public.sessions        enable row level security;
 alter table public.segments        enable row level security;
 alter table public.session_metrics enable row level security;
 
-revoke all on public.telemetry_logs_v1 from anon;
+-- Sealed for good: RLS enabled with zero policies denies every operation to
+-- anon and authenticated regardless of whatever grants the pre-v2 script left
+-- behind (this file never saw that script's CREATE TABLE, so those grants
+-- can't be audited from here — this closes the gap unconditionally instead).
+alter table if exists public.telemetry_logs_v1 enable row level security;
+revoke all on public.telemetry_logs_v1 from anon, authenticated;
 
 -- subjects: no client policy of any kind. `kind` in particular must stay
 -- unwritable, or a synthetic run could relabel itself human.
@@ -414,11 +457,27 @@ create policy "profiles update own"
   using (user_id = auth.uid())
   with check (user_id = auth.uid() and subject_id = public.current_subject_id());
 
--- sessions: insert and read your own.
+-- RLS alone cannot restrict *which columns* an update touches — the policy
+-- above passes for any column value as long as user_id/subject_id are intact.
+-- Column-level grants are what actually confine a write to the two consent
+-- columns, matching the comment above this table; without this, display_name
+-- and created_at are just as writable via the same policy.
+revoke update on public.profiles from authenticated;
+grant update (consent_version, consented_at) on public.profiles to authenticated;
+
+-- sessions: insert and read your own. The extra null checks stop a client from
+-- planting a value in a column documented as SERVICE-WRITTEN (see sessions
+-- above) at insert time — there is no update policy to fix it afterwards, so
+-- a forged value here would otherwise stand forever.
 drop policy if exists "sessions insert own" on public.sessions;
 create policy "sessions insert own"
   on public.sessions for insert to authenticated
-  with check (subject_id = public.current_subject_id());
+  with check (
+    subject_id = public.current_subject_id()
+    and ended_at is null
+    and poll_hz is null
+    and bot_mode is null
+  );
 
 drop policy if exists "sessions select own" on public.sessions;
 create policy "sessions select own"
