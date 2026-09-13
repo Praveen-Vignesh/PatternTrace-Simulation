@@ -31,6 +31,7 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   const consentCheckbox = document.getElementById('consent-checkbox');
   const signinButton = document.getElementById('signin-button');
   const signupButton = document.getElementById('signup-button');
+  const googleButton = document.getElementById('google-signin-button');
   const signoutButton = document.getElementById('signout-button');
   const authMessage = document.getElementById('auth-message');
   const accountEmail = document.getElementById('account-email');
@@ -122,6 +123,7 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   function setAuthBusy(busy) {
     signinButton.disabled = busy;
     signupButton.disabled = busy;
+    googleButton.disabled = busy;
   }
 
   async function handleSignIn() {
@@ -164,8 +166,23 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
     } else setAuthMessage('');
   }
 
+  async function handleGoogleSignIn() {
+    if (consentCheckbox.checked === false) {
+      setAuthMessage('Please agree to telemetry collection before continuing.', true);
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage('Redirecting to Google…');
+    const result = await auth.onGoogleSignIn();
+    setAuthBusy(false);
+
+    if (result && result.error) setAuthMessage(result.error, true);
+  }
+
   signinButton.addEventListener('click', handleSignIn);
   signupButton.addEventListener('click', handleSignUp);
+  googleButton.addEventListener('click', handleGoogleSignIn);
   signoutButton.addEventListener('click', () => auth.onSignOut());
 
   // Start is gated: signed-in players always may; signed-out players may until

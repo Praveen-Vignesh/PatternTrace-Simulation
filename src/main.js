@@ -14,6 +14,7 @@ import {
   signIn,
   signUp,
   signOut,
+  signInWithGoogle,
   recordConsent,
   initTelemetryOutbox,
   flushTelemetry,
@@ -91,6 +92,30 @@ function freeSessionsRemaining() {
   return Math.max(0, FREE_SESSION_LIMIT - freeSessionsUsed());
 }
 
+// Google sign-in is a full-page redirect: there is no in-page result to hang
+// recordConsent() off, unlike email/password's awaited signIn()/signUp(). This
+// flag survives the round trip in localStorage and is consumed on the first
+// signed_in state after return.
+const PENDING_GOOGLE_CONSENT_KEY = 'aim-trainer.pending-google-consent';
+
+function setPendingGoogleConsent() {
+  try {
+    window.localStorage.setItem(PENDING_GOOGLE_CONSENT_KEY, '1');
+  } catch {
+    // Storage unavailable: consent simply won't be auto-stamped on return.
+  }
+}
+
+function consumePendingGoogleConsent() {
+  try {
+    const pending = window.localStorage.getItem(PENDING_GOOGLE_CONSENT_KEY) === '1';
+    window.localStorage.removeItem(PENDING_GOOGLE_CONSENT_KEY);
+    return pending;
+  } catch {
+    return false;
+  }
+}
+
 let authState = getAuthState();
 
 function canPlay() {
@@ -123,6 +148,15 @@ const home = createHome({
     },
     onSignOut() {
       return signOut();
+    },
+    // No result to check here: signInWithOAuth navigates away on success, so
+    // the checkbox is read and the redirect started, and consent is stamped
+    // when the session actually lands (see onAuthChange below).
+    async onGoogleSignIn() {
+      setPendingGoogleConsent();
+      const result = await signInWithGoogle();
+      if (result.error) consumePendingGoogleConsent();
+      return result;
     }
   },
   onStart: gatedLock,
@@ -133,6 +167,7 @@ const home = createHome({
 
 onAuthChange((state) => {
   authState = state;
+  if (state.status === 'signed_in' && consumePendingGoogleConsent()) recordConsent();
   home.renderAccount({ authState, freeSessionsRemaining: freeSessionsRemaining() });
 });
 

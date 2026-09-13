@@ -9,7 +9,11 @@ const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const client =
   url && anonKey
     ? createClient(url, anonKey, {
-        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false }
+        // detectSessionInUrl handles the Google OAuth redirect back to the app:
+        // supabase-js reads the code/tokens Google appended to the URL, exchanges
+        // them for a session, then strips them from the URL. A no-op for the
+        // email/password path, whose URLs never carry those params.
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
       })
     : null;
 
@@ -122,6 +126,19 @@ export async function signUp({ email, password }) {
 export async function signIn({ email, password }) {
   if (client === null) return { error: 'Supabase is not configured.' };
   const { error } = await client.auth.signInWithPassword({ email, password });
+  if (error) return { error: error.message };
+  return {};
+}
+
+// Redirects the browser to Google and never resolves on success (the page
+// navigates away); a rejected promise here means the redirect itself couldn't
+// start (e.g. the provider isn't configured in the Supabase dashboard).
+export async function signInWithGoogle() {
+  if (client === null) return { error: 'Supabase is not configured.' };
+  const { error } = await client.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo: window.location.origin }
+  });
   if (error) return { error: error.message };
   return {};
 }
