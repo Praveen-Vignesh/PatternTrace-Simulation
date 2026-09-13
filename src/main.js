@@ -16,6 +16,7 @@ import {
   signOut,
   signInWithGoogle,
   recordConsent,
+  validateSession,
   initTelemetryOutbox,
   flushTelemetry,
   flushTelemetryKeepalive
@@ -182,6 +183,12 @@ settings.subscribe((state) => {
 home.render(settings.get());
 home.renderAccount({ authState, freeSessionsRemaining: freeSessionsRemaining() });
 home.setScreen('home');
+
+// supabase-js trusts the session it restores from localStorage without asking the
+// server, so a deleted or revoked account would otherwise render as signed in
+// while recording nothing. This is the round-trip that corrects it; the sign-out
+// it may trigger flows back through onAuthChange above and re-renders the panel.
+validateSession();
 
 // Replay any telemetry a previous page load could not deliver.
 initTelemetryOutbox();

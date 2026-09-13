@@ -148,6 +148,33 @@ export async function signOut() {
   await client.auth.signOut();
 }
 
+// supabase-js restores the persisted session from localStorage and emits
+// INITIAL_SESSION without asking the server whether it is still valid, so a
+// deleted or revoked account still renders as signed in — and then silently
+// records nothing, because ensureAuth() can resolve no profile for it.
+// getUser() is the round-trip getSession() deliberately skips, and is what
+// corrects the state on boot.
+//
+// Only a definitive rejection signs out. A network failure leaves the session
+// alone: discarding a good session because the wifi dropped would be worse than
+// the bug this fixes. Same permanent-vs-transient split the outbox makes on
+// SQLSTATE — a retryable fetch error carries no 401/403 and so falls through.
+export async function validateSession() {
+  if (client === null) return;
+
+  const { data } = await client.auth.getSession();
+  if (data.session === null) return;
+
+  const { error } = await client.auth.getUser();
+  if (error === null || error === undefined) return;
+  if (error.status !== 401 && error.status !== 403) return;
+
+  console.warn('Stored session is no longer valid; signing out:', error.message);
+  // Local scope only. The server-side session is already gone in this case, so a
+  // global sign-out would call an endpoint that rejects it.
+  await client.auth.signOut({ scope: 'local' });
+}
+
 // Stamps consent on the caller's profile. The profiles update policy permits the
 // two consent columns (not the subject link), so this passes RLS. The value is
 // copied to subjects offline so it survives account deletion (see schema.sql).
