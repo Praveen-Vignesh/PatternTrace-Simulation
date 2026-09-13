@@ -5,11 +5,14 @@
 // play it had just recorded. Since the whole project exists to collect that
 // data, the loss is the bug. Three properties make delivery safe here:
 //
-//   - Idempotent. A batch is delivered as an upsert with ignoreDuplicates
-//     (ON CONFLICT DO NOTHING on the unique (session_id, segment_index)), so
-//     re-sending a row that already landed is a no-op — and DO NOTHING needs no
-//     UPDATE privilege, so it respects the append-only schema (no update policy
-//     anywhere). A partially delivered batch can therefore be retried whole.
+//   - Idempotent. A batch is delivered as a plain INSERT, and the unique
+//     (session_id, segment_index) turns a re-sent row into a 23505, which is
+//     read as "already delivered" rather than as a failure. An upsert would be
+//     the obvious way to say this, but PostgREST enters its upsert path on the
+//     Prefer: resolution=... header alone, and that path needs SELECT/UPDATE
+//     policies `segments` deliberately withholds — both resolutions are refused
+//     with 42501 while the identical plain INSERT succeeds. A partially
+//     delivered batch can therefore still be retried whole.
 //   - Persistent. The pending queue is mirrored to IndexedDB, which is async and
 //     off the main thread — unlike localStorage, whose synchronous write would
 //     hitch the render loop that the timing features are measured from. A reload
@@ -30,6 +33,29 @@ const DEFAULT_BATCH_SIZE = 25;
 
 function keyOf(row) {
   return `${row.session_id}:${row.segment_index}`;
+}
+
+// SQLSTATE classes a retry can never fix: 22 (data exception), 23 (integrity
+// constraint violation) and 42 (access rule violation — an RLS rejection lands
+// here as 42501). A queued row's payload is frozen, so re-sending it reproduces
+// the identical rejection forever while blocking every row behind it. Anything
+// else — a dropped connection with no code at all, a 5xx, an expired JWT
+// (PGRST301) — is transient and keeps its backoff-and-retry.
+const PERMANENT_SQLSTATE = /^(22|23|42)\d/;
+
+function isPermanent(error) {
+  return typeof error?.code === 'string' && PERMANENT_SQLSTATE.test(error.code);
+}
+
+// unique_violation on (session_id, segment_index): this row already landed on an
+// earlier attempt. It is inside the permanent class above, but it means the
+// opposite of the rest of that class — delivery succeeded, just not on this
+// request — so it settles the row instead of discarding it. This is what keeps
+// a retried batch idempotent now that delivery is a plain INSERT.
+const DUPLICATE_SQLSTATE = '23505';
+
+function isDuplicate(error) {
+  return error?.code === DUPLICATE_SQLSTATE;
 }
 
 // IndexedDB-backed store. Returns null if IndexedDB is unavailable or errors on
@@ -110,7 +136,8 @@ export function createOutbox({
   sendKeepalive = null,
   store = null,
   batchSize = DEFAULT_BATCH_SIZE,
-  onError = () => {}
+  onError = () => {},
+  onDrop = () => {}
 }) {
   const pending = new Map();
   let flushing = false;
@@ -150,29 +177,53 @@ export function createOutbox({
     backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
   }
 
-  // Drains the queue in batches. Stops and schedules a backed-off retry on the
-  // first failed batch, leaving the rest (and the failed one) in `pending` and
-  // in the store so nothing is lost.
+  // Drains the queue in batches. A TRANSIENT failure stops the drain and
+  // schedules a backed-off retry, leaving the rest (and the failed one) in
+  // `pending` and in the store so nothing is lost.
+  //
+  // A PERMANENT rejection cannot be waited out, so it gets the opposite
+  // treatment: the batch is re-sent one row at a time to find which rows are
+  // actually bad, and those are dropped. Without this, one undeliverable row —
+  // in practice a segment whose session belongs to a subject that is no longer
+  // signed in, replayed from IndexedDB at the head of the queue — blocks every
+  // row behind it for the life of the browser profile, retrying forever and
+  // landing nothing.
   async function flush() {
     if (flushing || pending.size === 0) return;
     flushing = true;
+    // Isolation persists for the rest of this drain: bad rows arrive in runs
+    // (one orphaned session's segments are contiguous), so returning to full
+    // batches after each drop would re-fail a whole batch once per bad row.
+    let isolating = false;
 
     try {
       while (pending.size > 0) {
+        const limit = isolating ? 1 : batchSize;
         const keys = [];
         const rows = [];
         for (const [key, row] of pending) {
           keys.push(key);
           rows.push(row);
-          if (rows.length >= batchSize) break;
+          if (rows.length >= limit) break;
         }
 
         try {
           await send(rows);
         } catch (error) {
-          onError(error);
-          scheduleRetry();
-          return;
+          if (isPermanent(error) === false) {
+            onError(error);
+            scheduleRetry();
+            return;
+          }
+          if (rows.length > 1) {
+            isolating = true;
+            continue;
+          }
+          // Alone and still rejected. A unique violation means the row is
+          // already in the table, which is delivery, not loss. Anything else is
+          // genuinely undeliverable, and discarding it is the only way the rows
+          // behind it can ever move.
+          if (isDuplicate(error) === false) onDrop(rows[0], error);
         }
 
         for (const key of keys) pending.delete(key);

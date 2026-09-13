@@ -227,9 +227,10 @@ file defines five. Read them for intent, never for current behaviour, and prefer
   `TRACK_WINDOW_MS` boundary, on `pause()` and on `end()`. Routing a tracking click through
   `shoot()` would fabricate `time_to_click_ms` on a drill that has no reaction event.
 - **Never reset `segmentIndex` outside `start()`.** Resetting it on resume makes the
-  post-pause rows collide with the pre-pause ones, and delivery is an upsert with
-  `ignoreDuplicates` (ON CONFLICT DO NOTHING) — so the entire second half of every paused
-  session is dropped with no error, no warning and no retry. The loudest failure in the
+  post-pause rows collide with the pre-pause ones, and a collision is indistinguishable
+  from a redelivery: the outbox reads `23505` on `unique (session_id, segment_index)` as
+  "this row already landed" and settles it. So the entire second half of every paused
+  session is discarded with no error, no warning and no retry. The loudest failure in the
   codebase is the one that prints nothing.
 - **Only `beginAttempt()` may reopen a segment buffer; `flushSegment()` does not clear it.**
   `segmentOpen` is what stops `pause()` and `end()` shipping the same frames twice under two
@@ -255,10 +256,17 @@ file defines five. Read them for intent, never for current behaviour, and prefer
   gone from the client — the label is `subjects.kind`, set server-side.
 - **Segment delivery goes through `src/outbox.js`**: batched, retried with backoff, and
   mirrored to **IndexedDB** (async — never localStorage, whose sync write would hitch the
-  render loop the timing features are measured from). Delivery is an idempotent upsert with
-  `ignoreDuplicates` (ON CONFLICT DO NOTHING on `unique (session_id, segment_index)`), which
-  needs no update privilege, so it respects append-only RLS and a partly-landed batch can be
-  retried whole. `flushTelemetryKeepalive()` sends the last batch on `pagehide` with a
+  render loop the timing features are measured from). Delivery is a **plain INSERT, never an
+  upsert** — PostgREST enters its upsert path on the `Prefer: resolution=...` header alone
+  (the `on_conflict` query param is inert without it), and that path is refused with `42501`
+  on `segments`, which grants neither SELECT nor UPDATE by design. Both `ignore-duplicates`
+  and `merge-duplicates` fail; the identical row inserts fine without the header. Idempotency
+  comes from the unique `(session_id, segment_index)` instead: a re-sent row raises `23505`,
+  which the outbox settles as "already delivered", so a partly-landed batch is still retried
+  whole. Failures are classified by SQLSTATE — classes `22`/`23`/`42` are permanent, so the
+  batch is re-sent one row at a time and only the genuinely undeliverable rows are dropped;
+  everything else keeps its backoff-and-retry. Without that split, one row whose session
+  belongs to a subject that is no longer signed in blocks every row behind it forever. `flushTelemetryKeepalive()` sends the last batch on `pagehide` with a
   keepalive fetch; anything unsent replays from IndexedDB on the next load (`initTelemetryOutbox`).
 - `src/telemetry.js` builds two payloads (`buildSessionPayload`, `buildSegmentPayload`)
   and stores streams **columnar** (parallel arrays keyed by field name): `trajectory`

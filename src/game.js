@@ -46,10 +46,11 @@ export function createGame({ scene, camera, crosshair, hud, onExpire = () => {} 
   let sessionIdPromise = Promise.resolve(null);
   let sessionStartMs = 0;
   // Resets ONLY in start(), which also mints a fresh session id. Never reset it
-  // on resume: delivery is an upsert with ignoreDuplicates (ON CONFLICT DO
-  // NOTHING on unique (session_id, segment_index)), so re-used indices would
-  // collide with the pre-pause rows and be silently dropped — no error, no
-  // warning, no retry, and the whole post-resume half of the session vanishes.
+  // on resume: a re-used index collides with a pre-pause row on the unique
+  // (session_id, segment_index), and the outbox cannot tell that collision apart
+  // from a redelivery — it reads 23505 as "already landed" and settles the row.
+  // So the whole post-resume half of the session vanishes with no error, no
+  // warning and no retry.
   let segmentIndex = 0;
   let routineId = DEFAULT_ROUTINE;
   let difficulty = DEFAULT_DIFFICULTY;

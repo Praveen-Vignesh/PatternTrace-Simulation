@@ -167,18 +167,29 @@ export async function recordConsent(version = CONSENT_VERSION) {
 // Telemetry delivery
 // ---------------------------------------------------------------------------
 
-// The segment insert: an upsert with ignoreDuplicates, so a retried batch that
-// partly landed is a no-op on the rows already there (ON CONFLICT DO NOTHING on
-// the unique (session_id, segment_index)). DO NOTHING takes no UPDATE privilege,
-// so this stays within the append-only RLS. No .select(): segments has no read
-// policy, and requesting the rows back would fail even though the write is
-// allowed.
+// The segment insert: a plain INSERT, deliberately NOT an upsert. PostgREST
+// switches to its upsert path on the Prefer: resolution=... header alone (the
+// on_conflict query param is inert without it), and that path is refused with
+// 42501 on this table under both resolutions — it needs SELECT/UPDATE policies
+// that `segments` withholds on purpose, since a trajectory is the raw material
+// of a biometric template. The identical row inserts fine without the header.
+//
+// Idempotency comes from the unique (session_id, segment_index) instead: a
+// re-sent row raises 23505, which the outbox reads as "already delivered". No
+// .select() either — segments has no read policy, so asking for the rows back
+// would fail even though the write is allowed.
 async function sendSegments(rows) {
-  const { error } = await client
-    .from('segments')
-    .upsert(rows, { onConflict: 'session_id,segment_index', ignoreDuplicates: true });
+  const { error } = await client.from('segments').insert(rows);
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    // The SQLSTATE is what tells the outbox whether a retry can ever succeed: an
+    // RLS rejection (42501) is permanent, a dropped connection is not. Flattening
+    // this to a bare message is what let one undeliverable row retry forever.
+    const failure = new Error(error.message);
+    failure.code = error.code;
+    failure.details = error.details;
+    throw failure;
+  }
 }
 
 // Best-effort delivery during page unload. supabase-js does not expose keepalive,
@@ -188,14 +199,14 @@ async function sendSegments(rows) {
 function sendSegmentsKeepalive(rows) {
   if (accessToken === null || typeof fetch === 'undefined') return;
 
-  fetch(`${url}/rest/v1/segments?on_conflict=session_id,segment_index`, {
+  fetch(`${url}/rest/v1/segments`, {
     method: 'POST',
     keepalive: true,
     headers: {
       'Content-Type': 'application/json',
       apikey: anonKey,
       Authorization: `Bearer ${accessToken}`,
-      Prefer: 'resolution=ignore-duplicates,return=minimal'
+      Prefer: 'return=minimal'
     },
     body: JSON.stringify(rows)
   }).catch(() => {});
@@ -208,7 +219,13 @@ const outbox =
         send: sendSegments,
         sendKeepalive: sendSegmentsKeepalive,
         store: createIdbStore(),
-        onError: (error) => console.warn('Segment batch delivery failed, will retry:', error.message)
+        onError: (error) => console.warn('Segment batch delivery failed, will retry:', error.message),
+        onDrop: (row, error) =>
+          console.warn(
+            `Segment ${row.session_id}:${row.segment_index} was rejected permanently ` +
+              `(${error.code}) and has been dropped:`,
+            error.message
+          )
       });
 
 // Replays anything a previous page load left unacknowledged in IndexedDB.
