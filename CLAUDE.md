@@ -253,7 +253,8 @@ file defines five. Read them for intent, never for current behaviour, and prefer
   nothing at all, which is the guarantee that no anonymous rows reach the table. It writes a
   `sessions` row (`insertSession`, awaited for its id) and hands each closed segment to the
   **durable outbox** (`insertSegment`), never a bare fire-and-forget insert. `is_human` is
-  gone from the client — the label is `subjects.kind`, set server-side.
+  gone from the client — the label is `subjects.kind`, set server-side, and it is
+  **default-deny**: a new signup is `'unknown'`, never `'human'`.
 - **Segment delivery goes through `src/outbox.js`**: batched, retried with backoff, and
   mirrored to **IndexedDB** (async — never localStorage, whose sync write would hitch the
   render loop the timing features are measured from). Delivery is a **plain INSERT, never an
@@ -298,7 +299,10 @@ file defines five. Read them for intent, never for current behaviour, and prefer
 - `model/src/fetch_telemetry.py` (**not yet written**) is to select from the
   **`v_training_segments`** view with the service key. The view emits the **canonical**
   `subject_id` (`merged_into` collapsed) plus `board_trajectory`/`duration_ms`, and runs
-  `security_invoker`.
+  `security_invoker`. **`is_human` is three-valued** — `true`/`false`/`NULL`, where `NULL`
+  is an unlabelled subject (the default state of every public signup) and must be excluded
+  with `where is_human is not null`, never coerced or imputed. The view also emits
+  `subject_kind_source`, `subject_cohort` and `subject_labeled_at`.
 
 **This requires the Email provider enabled in the Supabase dashboard**, and for instant play
 "Confirm email" disabled (Authentication → Providers → Email) — otherwise a new signup has no
@@ -307,8 +311,10 @@ credentials or no signed-in account the game still runs and simply drops rows.
 `sessions.ended_at` and `poll_hz` are never written by the client: there is no update policy
 (append-only), and both are derived offline with the service key.
 
-The renamed `telemetry_logs_v1` table still holds the old flat rows; the service key can
-read it, but nothing in the app writes there any more.
+The v1 flat table (`telemetry_logs`, renamed `telemetry_logs_v1`) has been **dropped** —
+those rows are gone, and `schema.sql` no longer renames or revokes on it. Do not reinstate
+either statement: `revoke` has no `if exists` form, so revoking on a missing table fails
+with `42P01` and rolls back the entire run.
 
 **The v2 shape (what `schema.sql` now defines).** Five tables, split because hardware and
 settings are session-scoped while outcomes are segment-scoped:
@@ -330,10 +336,17 @@ settings are session-scoped while outcomes are segment-scoped:
 
 Three rules the v2 design encodes, worth preserving in any migration:
 
-- **`subjects.kind` is the authoritative human/synthetic label, not a per-row boolean.**
-  Synthetic reference data is produced by driving a bot in a real browser under a subject
-  provisioned server-side as `kind='synthetic'` (`kind_source='provisioned'`), never by
-  trusting a client flag. `sessions.bot_mode` is legacy and always null now.
+- **`subjects.kind` is the authoritative human/synthetic label, not a per-row boolean —
+  and it is default-deny.** A new signup is `kind='unknown'`; it used to default to
+  `'human'`, which silently enrolled every stranger into the training set as a verified
+  human. `'human'` and `'synthetic'` are set only by a deliberate service-key write, and
+  `subjects_label_has_provenance` forces `kind_source` to move with them, so a label can
+  never exist without its provenance. Synthetic reference data is produced by driving a bot
+  in a real browser under a subject provisioned server-side as `kind='synthetic'`
+  (`kind_source='provisioned'`), never by trusting a client flag. `sessions.bot_mode` is
+  legacy and always null now. **Model predictions must never be written back into `kind`** —
+  ground truth is what a person decided; a retrain that consumes its predecessor's guesses
+  amplifies its own errors.
 - **Append-only on every telemetry table: no update or delete policy on `subjects`,
   `sessions`, `segments` or `session_metrics`.** A behavioural reference set the account
   holder can rewrite is not a reference set. The one update policy in the schema is
@@ -364,8 +377,14 @@ Two stages, each a module with a `--in`/`--out` CLI, so datasets are files on di
 than state in a notebook:
 
 `fetch_telemetry.py` pages through the table in 1000-row batches — PostgREST caps a single
-response there, so the loop is not optional — filtered by `--routine`/`--is-human`, and
+response there, so the loop is not optional — filtered by `--routine` and `--label`, and
 writes `.parquet`, `.csv` or `.json` picked from the `--out` extension.
+
+`--label` is **three-state** (`human` | `synthetic` | `any`), not a boolean: `is_human` is
+nullable now, and a two-state `--is-human` flag has no way to express "exclude the
+unlabelled", which is mandatory before fitting. It must default to excluding `NULL` rows —
+an unlabelled subject is a stranger nobody has verified, and silently training on them is
+the exact bug the default-deny label exists to prevent.
 
 `features.py` flattens one segment into one row. The parts that encode real decisions:
 

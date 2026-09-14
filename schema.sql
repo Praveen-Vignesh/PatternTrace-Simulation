@@ -1,6 +1,22 @@
 -- Aim Trainer telemetry schema (v2 — multi-user).
 -- Run this in the Supabase SQL editor (or psql) before starting a session.
 --
+-- PASTE THIS FILE AS ONE BUFFER — NEVER IN CHUNKS. Postgres runs a
+-- multi-statement simple query as a single implicit transaction, so a failure
+-- anywhere rolls the whole run back and no intermediate state is ever visible.
+-- Split it up and that guarantee is gone. The sharpest edge is the
+-- `drop trigger if exists on_auth_user_created` / `create trigger` pair further
+-- down: a signup landing between them gets an auth.users row with NO subjects
+-- and NO profiles row, after which the client resolves a null subject_id and
+-- silently drops every telemetry row that account ever produces — permanently,
+-- with no error anywhere. Nothing in this file repairs such a user. That drop
+-- also holds ACCESS EXCLUSIVE on auth.users until the run commits, so signups
+-- block (they do not fail) for its duration; prefer a low-traffic moment.
+-- Afterwards, confirm none were stranded:
+--   select u.id, u.email, u.created_at from auth.users u
+--     left join public.profiles p on p.user_id = u.id
+--    where p.user_id is null;   -- expect zero rows
+--
 -- Five tables:
 --   subjects        — a pseudonymous person. Survives account deletion.
 --   profiles        — the link between an auth.users account and a subject.
@@ -19,13 +35,17 @@
 -- bloat the table and permit a session whose rows disagree about the DPI.
 
 -- ---------------------------------------------------------------------------
--- Legacy
+-- Legacy — nothing to do here any more
 -- ---------------------------------------------------------------------------
--- v1 rows carry no identity at all, so they cannot be attached to a subject and
--- must not be mixed into a multi-user training set. They are kept, renamed, and
--- ignored. Drop the table by hand once you no longer want them.
-
-alter table if exists public.telemetry_logs rename to telemetry_logs_v1;
+-- v1 stored everything in one flat `telemetry_logs` table whose rows carried no
+-- identity at all, so they could never be attached to a subject or mixed into a
+-- multi-user training set. That table was renamed `telemetry_logs_v1`, kept as a
+-- graveyard for a while, and has since been DROPPED by hand.
+--
+-- This file therefore no longer renames it or revokes on it. Do not reinstate
+-- either statement: `revoke` has no `if exists` form, so a revoke against a
+-- table that is gone fails with 42P01 and — because the whole file runs as one
+-- implicit transaction — rolls back every other change in the run.
 
 -- ---------------------------------------------------------------------------
 -- subjects
@@ -40,11 +60,32 @@ alter table if exists public.telemetry_logs rename to telemetry_logs_v1;
 -- the human set by running it under a subject provisioned with the service key
 -- as kind='synthetic' (kind_source='provisioned'), never by trusting a per-row
 -- boolean the client controls.
+--
+-- `kind` is DEFAULT-DENY: a new signup is 'unknown', not 'human'. It used to
+-- default to 'human', which meant every stranger who ever signed up entered the
+-- training set as a verified human — encoding absence of information as a
+-- positive claim, and failing in only one direction (a bot becoming a human,
+-- never the reverse), which is the worst direction for a bot detector. Trust is
+-- granted here the same way RLS grants it below: explicitly, never by default.
+-- 'human' and 'synthetic' are set ONLY by a deliberate service-key write; see
+-- the labelling runbook after the constraints.
+--
+-- Because the training view joins `kind` live rather than stamping it onto each
+-- segment row, relabelling is RETROACTIVE: label a subject today and every
+-- segment they ever recorded reclassifies with it. That is what makes post-hoc
+-- manual labelling correct rather than a workaround.
 
 create table if not exists public.subjects (
   subject_id uuid primary key default gen_random_uuid(),
   created_at timestamptz not null default now(),
-  kind text not null default 'human' check (kind in ('human', 'synthetic')),
+
+  -- Default-deny. The constraint is NAMED, unlike the original inline one,
+  -- whose auto-generated name is why the migration below has to discover it by
+  -- the column it constrains instead of by name.
+  kind text not null default 'unknown'
+    constraint subjects_kind_allowed
+    check (kind in ('human', 'synthetic', 'unknown')),
+
   -- Consent is stamped here, not only on profiles, so the record of it survives
   -- account deletion along with the data it authorises.
   consent_version text,
@@ -65,7 +106,20 @@ create table if not exists public.subjects (
   -- deliberately set kind.
   kind_source text not null default 'default'
     constraint subjects_kind_source_check
-    check (kind_source in ('default', 'provisioned', 'reviewed'))
+    check (kind_source in ('default', 'provisioned', 'reviewed')),
+
+  -- Which batch this subject belongs to: 'bot_v1_linear', 'bot_v2_jitter',
+  -- 'friends_batch_1'. SERVICE-WRITTEN. Lets a train/test split hold out a
+  -- whole bot variant, and lets an error analysis name WHICH bot evaded
+  -- detection rather than reporting one undifferentiated miss rate. Requires
+  -- one subject per bot variant — two variants sharing an account are
+  -- indistinguishable afterwards. Free text on purpose: a CHECK would need
+  -- editing every time a variant is added, for tens of rows.
+  cohort text,
+
+  -- When `kind` was last deliberately set. Provenance paired with kind_source:
+  -- 'what decided it' plus 'when'. NULL means never deliberately labelled.
+  labeled_at timestamptz
 );
 
 -- Additive migration for databases created before these columns existed.
@@ -75,6 +129,12 @@ alter table public.subjects
   add column if not exists merged_into uuid references public.subjects(subject_id);
 alter table public.subjects
   add column if not exists kind_source text not null default 'default';
+-- These two are what actually upgrade a live database; the create table above
+-- is a no-op there. Not redundant with the canonical definition: the training
+-- view references sub.cohort, so omitting these fails loudly at view creation
+-- and rolls the whole run back rather than producing a half-migrated schema.
+alter table public.subjects add column if not exists cohort text;
+alter table public.subjects add column if not exists labeled_at timestamptz;
 -- The check constraint is added separately so a re-run does not error if it is
 -- already present (Postgres has no "add constraint if not exists").
 do $$
@@ -87,6 +147,148 @@ begin
       check (kind_source in ('default', 'provisioned', 'reviewed'));
   end if;
 end $$;
+
+-- Widen `kind` to three values. The original check was written inline and
+-- UNNAMED, so Postgres auto-generated its name ('subjects_kind_check', or with
+-- a digit appended if that was ever taken) — which is why it is discovered by
+-- conkey (the column the expression touches) rather than by name. A by-name
+-- drop that missed would leave the old two-value constraint ANDed with the new
+-- one, so 'unknown' would stay rejected, and because SET DEFAULT below is not
+-- validated against CHECK constraints nothing would reveal it until signup
+-- broke. subjects_kind_source_check has a different conkey and is untouched;
+-- subjects_label_has_provenance spans two columns and is likewise unmatched.
+--
+-- contype = 'c' is load-bearing, not decorative: on PG18 NOT NULL constraints
+-- are catalogued in pg_constraint too, with the same conkey as this column.
+--
+-- Names are collected before the loop rather than dropped from under an open
+-- cursor over pg_constraint.
+do $$
+declare
+  doomed text[];
+  victim text;
+begin
+  select coalesce(array_agg(con.conname), '{}')
+    into doomed
+    from pg_constraint con
+   where con.conrelid = 'public.subjects'::regclass
+     and con.contype = 'c'
+     and con.conname <> 'subjects_kind_allowed'
+     and con.conkey = array(
+           select attnum from pg_attribute
+            where attrelid = 'public.subjects'::regclass and attname = 'kind');
+
+  foreach victim in array doomed loop
+    execute format('alter table public.subjects drop constraint %I', victim);
+  end loop;
+
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'public.subjects'::regclass
+       and conname = 'subjects_kind_allowed'
+  ) then
+    alter table public.subjects
+      add constraint subjects_kind_allowed
+      check (kind in ('human', 'synthetic', 'unknown'));
+  end if;
+end $$;
+
+-- Default-deny. MUST run AFTER the constraint above accepts 'unknown'.
+-- SET DEFAULT is not validated against CHECK constraints at ALTER time — it
+-- only coerces the expression to the column type and writes pg_attrdef, with
+-- no constraint evaluation and no row scan. Run it first and nothing looks
+-- wrong until the next signup: handle_new_user()'s `insert ... default values`
+-- supplies 'unknown', the old CHECK rejects it, the exception escapes the
+-- security definer trigger, and the insert into auth.users ABORTS — GoTrue
+-- returns 500 and signup is broken for every new user, with a schema file that
+-- reads perfectly correct. Idempotent; does not rewrite existing rows.
+alter table public.subjects alter column kind set default 'unknown';
+
+-- A deliberate label must carry its provenance. Closes the one residual
+-- footgun: a hand-written UPDATE that sets `kind` but leaves kind_source at
+-- 'default', which the backfill's predicate would later silently demote back
+-- to 'unknown' — undoing a real decision with no error.
+--
+-- NOT VALID is load-bearing: it enforces on every future insert and update but
+-- skips the scan of existing rows, so this file stays re-runnable against a
+-- database where the one-time backfill has not been applied yet. Promote it by
+-- hand once, after that backfill:
+--   alter table public.subjects validate constraint subjects_label_has_provenance;
+-- A FRESH database has no rows to backfill and should run that validate
+-- immediately, or the constraint stays permanently unvalidated.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+     where conrelid = 'public.subjects'::regclass
+       and conname = 'subjects_label_has_provenance'
+  ) then
+    alter table public.subjects
+      add constraint subjects_label_has_provenance
+      check (kind = 'unknown' or kind_source <> 'default') not valid;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------------
+-- Labelling a subject  (service key / SQL editor ONLY)
+-- ---------------------------------------------------------------------------
+-- There is no client path to `subjects.kind` and there must never be one — see
+-- the RLS section below, where subjects gets no client policy of any kind.
+-- Label by hand, here, in batches. All four columns move together or
+-- subjects_label_has_provenance rejects the write.
+--
+-- Do NOT turn this into a security definer function in the `public` schema.
+-- PostgREST auto-exposes every public function as POST /rest/v1/rpc/<name>;
+-- Postgres grants EXECUTE to PUBLIC by default (unlike tables); and Supabase's
+-- default privileges grant it to anon and authenticated on top. A definer
+-- function writing `kind` would therefore be callable by anyone holding the
+-- publishable key inlined into the Vite bundle. If ergonomics ever justify a
+-- helper, put it in a separate schema PostgREST does not expose and make it
+-- security invoker.
+--
+-- `returning` is not decoration: ZERO ROWS BACK MEANS NO EMAIL MATCHED AND
+-- NOTHING WAS LABELLED. A typo'd address is otherwise a silent no-op.
+--
+-- Bot accounts — one subject per variant, so a split can hold one out:
+--
+--   update public.subjects sub
+--      set kind='synthetic', kind_source='provisioned',
+--          cohort='bot_v1_linear', labeled_at=now()
+--     from public.profiles p
+--     join auth.users u on u.id = p.user_id
+--    where sub.subject_id = p.subject_id
+--      and lower(u.email) = any (array[
+--            'bot01@example.com',
+--            'bot02@example.com'
+--          ])
+--   returning sub.subject_id, u.email, sub.kind, sub.cohort;
+--
+-- Trusted human contributors:
+--
+--   update public.subjects sub
+--      set kind='human', kind_source='reviewed',
+--          cohort='friends_batch_1', labeled_at=now()
+--     from public.profiles p
+--     join auth.users u on u.id = p.user_id
+--    where sub.subject_id = p.subject_id
+--      and lower(u.email) = any (array['friend@example.com'])
+--   returning sub.subject_id, u.email, sub.kind, sub.cohort;
+--
+-- Current label state, for eyeballing what exists:
+--
+--   select kind, kind_source, cohort, count(*)
+--     from public.subjects group by 1,2,3 order by 1,2,3;
+--
+-- After labelling, confirm no canonical identity carries divergent labels. The
+-- view collapses subject_id through merged_into but reads `kind` off the RAW
+-- row, so labelling one of a person's duplicate accounts and missing the other
+-- makes half their segments emit NULL and be dropped by the pipeline's filter —
+-- data loss for a subject you did label, with no error. Expect zero rows:
+--
+--   select coalesce(sub.merged_into, sub.subject_id) as canonical
+--     from public.subjects sub group by 1
+--    having count(distinct sub.kind) > 1
+--        or count(distinct coalesce(sub.cohort,'')) > 1;
 
 -- ---------------------------------------------------------------------------
 -- profiles
@@ -434,12 +636,9 @@ alter table public.sessions        enable row level security;
 alter table public.segments        enable row level security;
 alter table public.session_metrics enable row level security;
 
--- Sealed for good: RLS enabled with zero policies denies every operation to
--- anon and authenticated regardless of whatever grants the pre-v2 script left
--- behind (this file never saw that script's CREATE TABLE, so those grants
--- can't be audited from here — this closes the gap unconditionally instead).
-alter table if exists public.telemetry_logs_v1 enable row level security;
-revoke all on public.telemetry_logs_v1 from anon, authenticated;
+-- The v1 `telemetry_logs_v1` table used to be sealed here (RLS on, all grants
+-- revoked from anon and authenticated). It has been dropped, so there is
+-- nothing left to seal — see the Legacy note at the top of this file.
 
 -- subjects: no client policy of any kind. `kind` in particular must stay
 -- unwritable, or a synthetic run could relabel itself human.
@@ -519,6 +718,17 @@ create policy "session metrics select own"
 -- client cannot write — unlike the v1 per-row boolean, which it could.
 -- Service-key reads bypass RLS, so this stays invisible to the browser.
 --
+-- `is_human` IS THREE-VALUED: true (confirmed human), false (confirmed
+-- synthetic), NULL (nobody has labelled this subject). NULL is the default
+-- state of every public signup and MUST be filtered out before fitting —
+-- `where is_human is not null` — never coerced or imputed. A boolean CLI flag
+-- cannot express that filter, so the pipeline needs a three-state option.
+-- subject_kind_source is the audit column: once
+-- subjects_label_has_provenance is validated, `is_human is not null` already
+-- implies a deliberate label, so adding
+-- `and subject_kind_source in ('provisioned','reviewed')` should never change
+-- the row count — if it does, that constraint was never promoted.
+--
 -- security_invoker so the view runs with the caller's privileges, not the
 -- owner's. The real protection is the revoke below (only the service key, which
 -- bypasses RLS, can read it); security_invoker removes the footgun where a
@@ -532,9 +742,9 @@ create policy "session metrics select own"
 -- pipeline changes.
 --
 -- Dropped and recreated rather than CREATE OR REPLACE: replace can only append
--- columns to the end of an existing view, and this revision inserts
--- raw_subject_id mid-list, which replace rejects as a rename. The view holds no
--- data, so dropping it is free.
+-- columns to the end of an existing view, and this revision both changes the
+-- is_human expression and inserts the provenance columns mid-list, which
+-- replace rejects. The view holds no data, so dropping it is free.
 
 drop view if exists public.v_training_segments;
 
@@ -545,8 +755,21 @@ select
   s.id                              as session_id,
   coalesce(sub.merged_into, sub.subject_id) as subject_id,
   sub.subject_id                    as raw_subject_id,
-  sub.kind = 'human'  as is_human,
-  sub.kind            as subject_kind,
+  -- THREE-VALUED, and deliberately nullable. `sub.kind = 'human'` returned
+  -- false for a confirmed synthetic subject AND for an unlabelled stranger,
+  -- collapsing "measured non-human" and "nobody has checked" into one value
+  -- and feeding the second into training as ground truth. NULL now means "no
+  -- label" and MUST be filtered out before fitting, never coerced.
+  case sub.kind
+    when 'human'     then true
+    when 'synthetic' then false
+    else null
+  end                               as is_human,
+  sub.kind                          as subject_kind,
+  -- Provenance. Audit-grade rather than load-bearing: see the header above.
+  sub.kind_source                   as subject_kind_source,
+  sub.cohort                        as subject_cohort,
+  sub.labeled_at                    as subject_labeled_at,
   s.routine,
   s.difficulty,
   s.planned_duration_ms,
