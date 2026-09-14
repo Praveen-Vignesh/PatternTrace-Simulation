@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Before making any changes or decisions, you MUST read and follow the general agent rules located in `.claude/rules/rules.md`.
 **CRITICAL: NEVER USE GIT OR VERSION CONTROL COMMANDS.**
 
-## Scope discipline
+## Scope & plan
 
 `aim-simulator-prd.md` is the specification. v1 (§8's four phases) shipped and is verified
 against §9. The project is now in **v2**: a multi-routine trainer with a home screen,
@@ -14,33 +14,53 @@ player-configurable sensitivity, and a difficulty manager — all marked **(v2)*
 PRD's §3. Multiple concurrent targets, moving targets, and menus are **in** scope now;
 the older text saying otherwise has been amended.
 
-Alongside the game, an **offline Python pipeline now lives in `model/`**: it pulls
-telemetry back out of Supabase and trains a human-vs-bot classifier. It is a separate
+Alongside the game, an **offline Python pipeline is planned to live in `model/`**: it will
+pull telemetry back out of Supabase and train a human-vs-bot classifier. It is a separate
 program, not a backend — nothing in `src/` imports it, nothing in it reaches the browser,
 and it runs by hand after the fact. The PRD's "no Python backend" means the *game* has no
-server; it does not forbid `model/`.
+server; it does not forbid `model/`. **The code for it does not exist yet** — see
+"Implemented so far" below for exactly what does.
 
 Still out of scope: no LLM integration, no coaching/archetyping, no leaderboards, no
-sound, and no inference in the browser — the classifier is trained and applied offline.
+sound, and no inference in the browser — the classifier will be trained and applied
+offline, once it exists.
 
 The **browser app's** runtime dependencies are **only** `three` and
 `@supabase/supabase-js`. No frameworks — the home screen and overlays are plain HTML/CSS.
 Adding a dependency or a framework *there* is a spec violation, not an improvement.
 `model/requirements.txt` is a separate dependency set and is not bound by that rule.
 
-**Five routines have shipped**: precision flick, static flicking (gridshot), dynamic
-reflex (spidershot), reactive strafing, and target switching.
-`src/routines/index.js` is both the catalogue and the factory — it gates each tile with
-`available`, and `isAvailable` also requires a registered factory, so a new routine needs
-both. `src/difficulty.js` holds every per-routine parameter. Never mark a routine
-available before its factory exists; the home screen renders straight from that flag.
+## Implemented so far
 
-Two scoring shapes exist, and each routine declares which with a `kind` field.
-**Destructible** routines (`kind: 'destructible'` — flick, gridshot, spidershot, switching)
-consume the target on a hit and spawn a replacement. **Tracking** routines
-(`kind: 'tracking'` — strafing) deliberately do *not* — `resolveHit` is empty, because the
-drill is staying on the target, and consuming it would turn it into a flick drill. `game.js`
-branches on `kind` for both scoring and telemetry (see the segment model below).
+**Game (`src/`) — complete for v2's current scope:**
+- **Five routines shipped**: precision flick, static flicking (gridshot), dynamic reflex
+  (spidershot), reactive strafing, and target switching. `src/routines/index.js` is both
+  the catalogue and the factory — it gates each tile with `available`, and `isAvailable`
+  also requires a registered factory, so a new routine needs both. `src/difficulty.js`
+  holds every per-routine parameter.
+- Timed runs (5/10/15 min) with a home screen, pause/resume via pointer lock, and a
+  results screen. See "Architecture" below for the full session/segment model.
+- Full v2 telemetry pipeline: session + segment tables, columnar per-frame trajectories,
+  a durable IndexedDB-backed outbox with retry/backoff, and DPI-independent sensitivity
+  tracking.
+- Real email/password + Google OAuth accounts (`src/supabase.js`), consent stamping, and
+  a free-session gate before the signup wall.
+- The in-browser Bot Mode has been **removed entirely** — no `?bot=`, no `bot.js`.
+
+**Database (`schema.sql`) — the v2 shape, plus a label-integrity fix layered on top:**
+- Five tables (`subjects`, `profiles`, `sessions`, `segments`, `session_metrics`) plus the
+  `v_training_segments` view, RLS on every client-facing table, append-only by design.
+- **`subjects.kind` is now default-deny** (`'unknown'` by default, not `'human'`), with a
+  provenance constraint and a three-valued label in the training view. This was a real
+  bug — every signup used to enter the training set as a verified human — fixed across
+  `schema.sql`, `CLAUDE.md`, and documented in full in **`LABELING.md`**. See "Label
+  integrity" below for exactly how far this has been rolled out.
+
+**Not yet started:**
+- `model/` holds only `.env.example`, `requirements.txt`, and the gitignored `data/` and
+  `models/` directories. `fetch_telemetry.py`, `features.py`, and the training code itself
+  do not exist. Building bot accounts and recruiting trusted human contributors — the data
+  this pipeline needs — also hasn't started.
 
 ## Commands
 
@@ -51,9 +71,9 @@ npm run build      # static bundle to dist/
 npm run preview    # serve the built dist/ on :4173
 ```
 
-The offline pipeline is a second program with its own virtualenv and its own entry
-points. Its one-time setup is a `.venv` in `model/`, `pip install -r requirements.txt`,
-and a `model/.env` copied from `model/.env.example`:
+The offline pipeline will be a second program with its own virtualenv and its own entry
+points, once it exists. Its planned one-time setup is a `.venv` in `model/`,
+`pip install -r requirements.txt`, and a `model/.env` copied from `model/.env.example`:
 
 ```powershell
 cd model
@@ -62,9 +82,9 @@ python -m src.fetch_telemetry --routine flick --out data/flick.parquet
 python -m src.features --in data/flick.parquet --out data/flick_features.parquet
 ```
 
-Both scripts are run as modules (`python -m src.x`) from `model/`, because they use
-relative imports; `python src/features.py` fails. `data/` and `models/` are gitignored —
-everything in them is regenerable.
+Both scripts would run as modules (`python -m src.x`) from `model/`, because they'd use
+relative imports; `python src/features.py` would fail. `data/` and `models/` are
+gitignored — everything in them is regenerable.
 
 > **Pipeline status: `model/src/` does not exist yet.** `model/` currently holds only
 > `.env.example`, `requirements.txt`, and the gitignored `data/` and `models/` directories.
@@ -84,6 +104,13 @@ Plain ES modules, one factory function per file, no classes and no shared mutabl
 between modules. `main.js` is the only composition point: it builds the scene, controls
 and HUD, injects them into `createGame()`, wires the account panel and free-session gate,
 and owns the `requestAnimationFrame` loop.
+
+Two scoring shapes exist, and each routine declares which with a `kind` field.
+**Destructible** routines (`kind: 'destructible'` — flick, gridshot, spidershot, switching)
+consume the target on a hit and spawn a replacement. **Tracking** routines
+(`kind: 'tracking'` — strafing) deliberately do *not* — `resolveHit` is empty, because the
+drill is staying on the target, and consuming it would turn it into a flick drill. `game.js`
+branches on `kind` for both scoring and telemetry (see the segment model below).
 
 **A timed run is the session boundary; pointer lock only pauses it.** The player picks
 5/10/15 minutes on the home screen and `sessions.planned_duration_ms` records that choice.
@@ -158,10 +185,10 @@ would stutter the frame. The moving routines (spidershot, strafing, switching) s
 so a backgrounded tab doesn't teleport a target on return, and `clampInside`/`bounce`
 implement the inset-spawn and wall-reflection invariants below.
 
-**The in-browser Bot Mode was removed** (no `?bot=`, no `bot.js`). Synthetic reference data
-is now produced only under a subject provisioned server-side as `kind='synthetic'`, never by
-a client-controlled flag. `game.update()` samples the human's aim each frame; without a
-running session it returns immediately.
+**Synthetic reference data is produced only under a subject provisioned server-side as
+`kind='synthetic'`**, never by a client-controlled flag — Bot Mode was removed for exactly
+this reason. `game.update()` samples the human's aim each frame; without a running session
+it returns immediately.
 
 **The home screen is the resting state.** `main.js` runs four screens — HOME, PLAYING,
 PAUSED, RESULTS. Start requests the lock, `Esc` unlocks into PAUSED (clock frozen, Resume
@@ -174,15 +201,19 @@ DOM.
 `constants.js` holds defaults and every tunable (FOV, spawn volume, flick timing). Numbers
 belong there or in `difficulty.js`, not inline.
 
-**The other markdown in this repo predates v2 and is stale — CLAUDE.md and the source are
-the authority.** `README.md` still documents Bot Mode (`?bot=linear`), the flat
+**Most of the other markdown in this repo predates v2 and is stale — CLAUDE.md and the
+source are the authority.** `README.md` still documents Bot Mode (`?bot=linear`), the flat
 `telemetry_logs` table, a hardcoded sensitivity constant and "fire-and-forget" inserts —
 all four are gone. `TELEMETRY.md` (long, and useful for per-field semantics) still says the
-client "signs in anonymously" and needs Anonymous Sign-Ins enabled, and links
-`model/src/features.py`, which does not exist; its §3-4 are explicitly the v1 flat row,
-only §5 onward describes v2. `TELEMETRY_BY_ROUTINE.md` still references Bot Mode and calls
-`engaged_index` "0 or null". `schema.sql`'s own header comment says "Four tables" while the
-file defines five. Read them for intent, never for current behaviour, and prefer
+client "signs in anonymously" and needs Anonymous Sign-Ins enabled (confirmed still present
+at `TELEMETRY.md:13,19`), and links `model/src/features.py`, which does not exist; its
+§3-4 are explicitly the v1 flat row, only §5 onward describes v2 — except that even within
+§5 onward, `is_human` is still documented as a plain boolean (§551, §556-558, §717) and
+several passages still discuss `telemetry_logs_v1` as a live table (§16, §291-292, §311,
+§536, §588), which has since been **dropped** — see "Known defects" below.
+`TELEMETRY_BY_ROUTINE.md` still references Bot Mode. `schema.sql`'s own header comment
+correctly says "Five tables" — the "Four tables" claim belongs to `TELEMETRY.md:318`, not
+to `schema.sql`. Read all of this for intent, never for current behaviour, and prefer
 `src/telemetry.js` + `schema.sql` when they disagree.
 
 ## Invariants that break silently if violated
@@ -241,20 +272,33 @@ file defines five. Read them for intent, never for current behaviour, and prefer
 - **`SESSION_COMPLETE_FRACTION` is mirrored by the offline derivation.** Change one without
   the other and the number the player sees disagrees with the number the pipeline records.
   The client's verdict is display-only and must never be persisted.
+- **`subjects.kind` is default-deny; never write a model prediction back into it.** See
+  "Label integrity" below. This is the newest invariant in the codebase and the easiest to
+  violate by accident once the pipeline exists — a retrain that consumes its predecessor's
+  guesses as ground truth amplifies its own errors, silently, across every future retrain.
 
 ## Supabase
 
-**The client and the pipeline now both speak the v2 schema.** The earlier v1 flat
-`telemetry_logs` path has been migrated:
+**The client and the (future) pipeline both speak the v2 schema.** The earlier v1 flat
+`telemetry_logs` path has been migrated and its table dropped outright:
 
 - `src/supabase.js` requires a **real email + password account** (anonymous sign-in was
-  removed). `ensureAuth()` resolves the caller's `subject_id` from `profiles` only when a
-  session exists, and returns `null` otherwise — so an unauthenticated (free) session writes
-  nothing at all, which is the guarantee that no anonymous rows reach the table. It writes a
-  `sessions` row (`insertSession`, awaited for its id) and hands each closed segment to the
-  **durable outbox** (`insertSegment`), never a bare fire-and-forget insert. `is_human` is
-  gone from the client — the label is `subjects.kind`, set server-side, and it is
-  **default-deny**: a new signup is `'unknown'`, never `'human'`.
+  removed), or Google OAuth. `ensureAuth()` resolves the caller's `subject_id` from
+  `profiles` only when a session exists, and returns `null` otherwise — so an
+  unauthenticated (free) session writes nothing at all, which is the guarantee that no
+  anonymous rows reach the table. It writes a `sessions` row (`insertSession`, awaited for
+  its id) and hands each closed segment to the **durable outbox** (`insertSegment`), never
+  a bare fire-and-forget insert. `is_human` is gone from the client — the label is
+  `subjects.kind`, set server-side, and it is **default-deny**: a new signup is
+  `'unknown'`, never `'human'`.
+- **A persisted session is not proof the account still exists.** `supabase-js` restores it
+  from `localStorage` and fires `INITIAL_SESSION` with no server round-trip, so a deleted or
+  revoked account still renders as signed in while silently writing nothing (`ensureAuth()`
+  can resolve no `profiles` row for it). `validateSession()`, called once at boot from
+  `main.js` before `initTelemetryOutbox()`, forces that round-trip with `auth.getUser()` and
+  signs out locally (`{ scope: 'local' }`) only on a definitive `401`/`403` — a network
+  failure or a `5xx` must never be treated the same way, on the identical permanent-vs-
+  transient reasoning the outbox applies to delivery failures below.
 - **Segment delivery goes through `src/outbox.js`**: batched, retried with backoff, and
   mirrored to **IndexedDB** (async — never localStorage, whose sync write would hitch the
   render loop the timing features are measured from). Delivery is a **plain INSERT, never an
@@ -296,7 +340,7 @@ file defines five. Read them for intent, never for current behaviour, and prefer
   issued (`needsConfirmation !== true`); a confirmation-gated signup is stamped on its
   later sign-in instead. The text version is `CONSENT_VERSION` in `constants.js` — bump it
   when the wording materially changes, or old consent is silently treated as new.
-- `model/src/fetch_telemetry.py` (**not yet written**) is to select from the
+- `model/src/fetch_telemetry.py` (**not yet written**) is meant to select from the
   **`v_training_segments`** view with the service key. The view emits the **canonical**
   `subject_id` (`merged_into` collapsed) plus `board_trajectory`/`duration_ms`, and runs
   `security_invoker`. **`is_human` is three-valued** — `true`/`false`/`NULL`, where `NULL`
@@ -311,10 +355,13 @@ credentials or no signed-in account the game still runs and simply drops rows.
 `sessions.ended_at` and `poll_hz` are never written by the client: there is no update policy
 (append-only), and both are derived offline with the service key.
 
-The v1 flat table (`telemetry_logs`, renamed `telemetry_logs_v1`) has been **dropped** —
-those rows are gone, and `schema.sql` no longer renames or revokes on it. Do not reinstate
-either statement: `revoke` has no `if exists` form, so revoking on a missing table fails
-with `42P01` and rolls back the entire run.
+**The v1 flat table has been dropped outright**, not merely renamed-and-ignored:
+`telemetry_logs` was renamed `telemetry_logs_v1`, kept as a graveyard for a while, and has
+since been deleted. `schema.sql` no longer renames or revokes on it — see "Known defects"
+below for the live incident this caused, and never reinstate either statement: `REVOKE` has
+no `IF EXISTS` form, so revoking on a table that no longer exists fails with `42P01` and,
+because the whole file runs as one implicit transaction, rolls back the entire migration
+run.
 
 **The v2 shape (what `schema.sql` now defines).** Five tables, split because hardware and
 settings are session-scoped while outcomes are segment-scoped:
@@ -334,7 +381,7 @@ settings are session-scoped while outcomes are segment-scoped:
 - `session_metrics` — derived aggregates, written offline with the service key, read by
   the player.
 
-Three rules the v2 design encodes, worth preserving in any migration:
+Rules the v2 design encodes, worth preserving in any migration:
 
 - **`subjects.kind` is the authoritative human/synthetic label, not a per-row boolean —
   and it is default-deny.** A new signup is `kind='unknown'`; it used to default to
@@ -371,35 +418,110 @@ and dropping rows; and because Vite inlines `import.meta.env` at build time, `.e
 must exist **before** `npm run build` or the Supabase client is tree-shaken out of the
 bundle entirely.
 
-## The offline pipeline (`model/`)
+## Label integrity — rollout status
 
-Two stages, each a module with a `--in`/`--out` CLI, so datasets are files on disk rather
-than state in a notebook:
+The default-deny fix to `subjects.kind` is a **schema change plus a manual operational
+runbook**, and the two are at different stages of completion. `schema.sql` and this file are
+both fully updated with the design; the checklist below is the actual database state and
+must be kept current by hand as the remaining steps are run. **The full runbook, verification
+queries, and the review log showing how the design was challenged and corrected, live in
+`LABELING.md` — read it before doing any of the remaining steps, do not improvise them.**
 
-`fetch_telemetry.py` pages through the table in 1000-row batches — PostgREST caps a single
-response there, so the loop is not optional — filtered by `--routine` and `--label`, and
-writes `.parquet`, `.csv` or `.json` picked from the `--out` extension.
+- [x] `schema.sql` edited: `kind` default-deny, three-valued view, provenance constraint,
+  labelling runbook, one-buffer warning.
+- [x] `schema.sql` applied to the live database (the migration itself has been run).
+- [x] View verified to expose `subject_cohort` / three-valued `is_human` post-migration.
+- [ ] **One-time backfill NOT YET CONFIRMED RUN**: existing pre-migration rows —
+  including at least one known account that played a flick session before this fix — may
+  still carry `kind='human', kind_source='default'`. Until the backfill in `LABELING.md`
+  §5.4 runs, those rows are unlabelled data disguised as verified ground truth.
+- [ ] `subjects_label_has_provenance` **NOT YET VALIDATED** (`LABELING.md` §5.5) — depends
+  on the backfill above completing first.
+- [ ] No bot accounts provisioned yet; no trusted human contributors labelled yet
+  (`LABELING.md` §5.6 has the exact batch-`UPDATE` statements).
+- [ ] The `merged_into` divergence gate (`LABELING.md` §5.7) has not yet been run, since
+  no labelling has happened for it to check.
 
-`--label` is **three-state** (`human` | `synthetic` | `any`), not a boolean: `is_human` is
-nullable now, and a two-state `--is-human` flag has no way to express "exclude the
+**Update this checklist as each step is completed** — this is the one place in the repo
+meant to answer "is the label fix actually live," as opposed to "has the SQL been written."
+
+## The offline pipeline (`model/`) — planned design, not yet built
+
+Two stages, each intended to be a module with a `--in`/`--out` CLI, so datasets are files
+on disk rather than state in a notebook. **None of the following code exists yet** — this
+section documents the design decisions already made so the next session implements them
+consistently rather than re-deriving them, not code you can run today.
+
+`fetch_telemetry.py` would page through the table in 1000-row batches — PostgREST caps a
+single response there, so the loop is not optional — filtered by `--routine` and `--label`,
+and write `.parquet`, `.csv` or `.json` picked from the `--out` extension.
+
+`--label` must be **three-state** (`human` | `synthetic` | `any`), not a boolean: `is_human`
+is nullable, and a two-state `--is-human` flag has no way to express "exclude the
 unlabelled", which is mandatory before fitting. It must default to excluding `NULL` rows —
 an unlabelled subject is a stranger nobody has verified, and silently training on them is
 the exact bug the default-deny label exists to prevent.
 
-`features.py` flattens one segment into one row. The parts that encode real decisions:
+`features.py` would flatten one segment into one row. The parts that encode decisions
+already made:
 
 - **Click-only fields stay NaN on non-click rows.** `time_to_click_ms`, `dwell_ms` and the
-  click offsets do not exist on a `timeout` or `track` segment, and are deliberately *not*
-  imputed — a fabricated reaction time would teach the classifier a lie. The v2 schema
+  click offsets do not exist on a `timeout` or `track` segment, and must not be imputed —
+  a fabricated reaction time would teach the classifier a lie. The v2 schema already
   enforces the same thing as a check constraint.
 - **Angular features come from `yaw`/`pitch`, input features from `dx`/`dy`.** The former
   are DPI-independent and comparable across users; the latter are raw counts and are only
   comparable once `sessions.dpi` is known.
-- `_coerce_frames` accepts a list, a JSON string, or a Python `repr` string, because
-  `to_csv()` stringifies nested structures with single quotes that `json.loads` rejects.
+- `_coerce_frames` would need to accept a list, a JSON string, or a Python `repr` string,
+  because `to_csv()` stringifies nested structures with single quotes that `json.loads`
+  rejects.
 
-Keep the game's telemetry shape and this module in sync: adding a field to `sampleFrame()`
-without teaching `_segment_features` about it silently trains on the old feature set.
+Keep the game's telemetry shape and this module in sync once it exists: adding a field to
+`sampleFrame()` without teaching `_segment_features` about it would silently train on the
+old feature set.
+
+**When this pipeline is built, split train/test by `subject_id` (GroupKFold), never by
+row** — the view's `merged_into`-collapsed `subject_id` exists to be that grouping key.
+Also train once with the hardware block (`dpi`/`refresh_hz`/`device_fingerprint`) and once
+without, and compare: if bots and humans run on visibly different hardware, a model can
+score near-perfectly by learning the hardware rather than the aim, then collapse on real
+public users. A small initial human cohort (a handful of trusted contributors) will likely
+teach the first model "is this one of these few people" rather than "is this a human" —
+treat v1 as a proof of concept, not a shippable classifier.
+
+## Known defects — not yet fixed
+
+- **`TELEMETRY.md` is stale in two ways that "read it for intent" doesn't excuse**, because
+  both sit in the section the file itself claims is current (§5 onward): (1) `is_human` is
+  documented as a plain boolean passed through unchanged into `features.py` (§551, §556-558,
+  §717) — it is now three-valued and nullable, and code written against the old description
+  would crash `sklearn.fit()` on the first unlabelled row; (2) an entire section, §5.6 "the
+  graveyard", plus references at §16, §291-292, §311 and a row in the permissions table at
+  §588, still describe `telemetry_logs_v1` as a live table kept for reading — it has been
+  **dropped**. Flagged repeatedly during the label-integrity work and deliberately deferred
+  each time pending a decision on scope; still unfixed as of this writing.
+- **Seven pre-existing `pg_constraint` guards in `schema.sql` match on `conname` alone**,
+  with no `conrelid` scoping (`subjects_kind_source_check`, `sessions_dpi_positive`,
+  `sessions_sens_positive`, `segments_frame_count_positive`, `segments_target_count_positive`,
+  `segments_segment_index_nonneg`, `segments_durations_nonneg`). This works today only
+  because every constraint name in this database happens to be unique — it is not
+  load-bearing yet, but it is inconsistent with the two constraints added for the label fix
+  (`subjects_kind_allowed`, `subjects_label_has_provenance`), which are properly scoped by
+  `conrelid`. Cosmetic; normalize if touching this area again.
+- **The label-integrity backfill/validate/labelling steps are not yet confirmed complete**
+  — see the checklist in "Label integrity" above. This is the most consequential open item:
+  until it is done, at least one real account's data sits mislabelled exactly the way the
+  fix was designed to prevent.
+- **`model/` does not exist as code.** Not a defect in anything built — a reminder that
+  "the offline pipeline" throughout this file is a design, not a working program, and
+  should not be cited as if it runs.
+
+**Deliberately not defects** (recorded so they aren't "discovered" again): no predictions
+table exists yet — correct, it should only be built once a model exists, and it must never
+share a column with verified ground truth; there is no labelling helper function or RPC
+endpoint — rejected on purpose, since PostgREST would auto-expose it to the anon key inlined
+in the browser bundle; there is no email-based auto-enrollment for trusted contributors —
+labelling is deliberately manual, by design, per `LABELING.md`.
 
 ## Verifying changes
 
@@ -431,15 +553,19 @@ deterministic. Sample positions per frame, then derive speed and per-frame turn 
 the displacement vectors. That is how "constant speed", "smooth arcs" and "abrupt cuts"
 are verified as numbers rather than impressions.
 
-The `model/` side needs no database to exercise: `build_features()` takes a DataFrame, so
-a handful of hand-built segment dicts (one per outcome — `hit`, `miss`, `timeout`, `track`)
-is enough to check that click-only columns stay NaN off click rows and that a
-single-frame segment does not divide by zero. Pull real rows only when the question is
-about the data rather than the code.
+The `model/` side needs no database to exercise once built: `build_features()` should take
+a DataFrame, so a handful of hand-built segment dicts (one per outcome — `hit`, `miss`,
+`timeout`, `track`) will be enough to check that click-only columns stay NaN off click rows
+and that a single-frame segment does not divide by zero. Pull real rows only when the
+question is about the data rather than the code.
 
 Browser-only criteria — pointer lock, `Esc` freezing the countdown and Resume continuing the
 *same* run, the duration selector, the results screen, mouse feel, and rows actually landing
 in the database — still need a human to confirm.
+
+Database migrations (`schema.sql`) can only be verified against a live Supabase instance —
+paste as one buffer (never in chunks, see the file's own header warning), then run the
+verification queries in `LABELING.md` §6. There is no way to dry-run this locally.
 
 ## Conventions
 
