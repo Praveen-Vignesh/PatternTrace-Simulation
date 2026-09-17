@@ -202,9 +202,12 @@ DOM.
 belong there or in `difficulty.js`, not inline.
 
 **Most of the other markdown in this repo predates v2 and is stale — CLAUDE.md and the
-source are the authority.** `README.md` still documents Bot Mode (`?bot=linear`), the flat
-`telemetry_logs` table, a hardcoded sensitivity constant and "fire-and-forget" inserts —
-all four are gone. `TELEMETRY.md` (long, and useful for per-field semantics) still says the
+source are the authority.** **Correction, 2026-09-17: `README.md` is NOT among the stale
+files.** This section previously claimed it still documented Bot Mode (`?bot=linear`), the
+flat `telemetry_logs` table, a hardcoded sensitivity constant and "fire-and-forget"
+inserts. All four claims were **false** — the README already describes Bot Mode's removal,
+the five v2 tables, the durable outbox, and settings-based sensitivity. Treat `README.md`
+as current. `TELEMETRY.md` (long, and useful for per-field semantics) still says the
 client "signs in anonymously" and needs Anonymous Sign-Ins enabled (confirmed still present
 at `TELEMETRY.md:13,19`), and links `model/src/features.py`, which does not exist; its
 §3-4 are explicitly the v1 flat row, only §5 onward describes v2 — except that even within
@@ -431,16 +434,26 @@ queries, and the review log showing how the design was challenged and corrected,
   labelling runbook, one-buffer warning.
 - [x] `schema.sql` applied to the live database (the migration itself has been run).
 - [x] View verified to expose `subject_cohort` / three-valued `is_human` post-migration.
-- [ ] **One-time backfill NOT YET CONFIRMED RUN**: existing pre-migration rows —
-  including at least one known account that played a flick session before this fix — may
-  still carry `kind='human', kind_source='default'`. Until the backfill in `LABELING.md`
-  §5.4 runs, those rows are unlabelled data disguised as verified ground truth.
-- [ ] `subjects_label_has_provenance` **NOT YET VALIDATED** (`LABELING.md` §5.5) — depends
-  on the backfill above completing first.
+- [x] **One-time backfill (`LABELING.md` §5.4) confirmed unnecessary — 2026-09-17.**
+  Verified against the live database, not assumed: `select count(*) from public.subjects
+  where kind <> 'unknown' and kind_source = 'default'` returned **0**, against 2 total
+  subjects both sitting at `kind='unknown', kind_source='default'`. No row was ever
+  mislabelled, so §5.4 is a no-op here. The earlier claim that "at least one known
+  account that played a flick session" carried `kind='human'` was **wrong** — it
+  predated the migration and was never re-checked. Re-run the §5.2 pre-flight query
+  before trusting this if the database is ever restored from an older backup.
+- [x] `subjects_label_has_provenance` **VALIDATED — 2026-09-17.**
+  `alter table public.subjects validate constraint subjects_label_has_provenance;`
+  ran clean; `select conname, convalidated from pg_constraint where
+  conrelid='public.subjects'::regclass and conname='subjects_label_has_provenance'`
+  confirms `convalidated = true`. Enforced against every existing row now, not just
+  future writes.
 - [ ] No bot accounts provisioned yet; no trusted human contributors labelled yet
-  (`LABELING.md` §5.6 has the exact batch-`UPDATE` statements).
-- [ ] The `merged_into` divergence gate (`LABELING.md` §5.7) has not yet been run, since
-  no labelling has happened for it to check.
+  (`LABELING.md` §5.6 has the exact batch-`UPDATE` statements). This is the one
+  remaining item, and it only closes once Phase 6 recruitment/bot-provisioning starts.
+- [x] The `merged_into` divergence gate (`LABELING.md` §5.7) **run — 2026-09-17.**
+  Returned 0 rows (trivial at 2 subjects, neither merged). Re-run after any future
+  labelling batch, per §5.7's "not optional" warning.
 
 **Update this checklist as each step is completed** — this is the one place in the repo
 meant to answer "is the label fix actually live," as opposed to "has the SQL been written."
@@ -508,10 +521,14 @@ treat v1 as a proof of concept, not a shippable classifier.
   load-bearing yet, but it is inconsistent with the two constraints added for the label fix
   (`subjects_kind_allowed`, `subjects_label_has_provenance`), which are properly scoped by
   `conrelid`. Cosmetic; normalize if touching this area again.
-- **The label-integrity backfill/validate/labelling steps are not yet confirmed complete**
-  — see the checklist in "Label integrity" above. This is the most consequential open item:
-  until it is done, at least one real account's data sits mislabelled exactly the way the
-  fix was designed to prevent.
+- ~~**The label-integrity backfill/validate/labelling steps are not yet confirmed
+  complete.**~~ **RESOLVED 2026-09-17** — verified against the live database, not assumed.
+  The backfill was a no-op (0 rows mislabelled), `subjects_label_has_provenance` is now
+  `convalidated = true`, and the `merged_into` divergence gate returned 0 rows. The old
+  claim that "at least one real account's data sits mislabelled" was **false** and had
+  simply never been re-checked after the migration. Only §5.6 (labelling bot accounts and
+  trusted contributors) remains, and it cannot start before Phase 6. See the checklist in
+  "Label integrity" above for the queries and results.
 - **`model/` does not exist as code.** Not a defect in anything built — a reminder that
   "the offline pipeline" throughout this file is a design, not a working program, and
   should not be cited as if it runs.
@@ -572,3 +589,19 @@ verification queries in `LABELING.md` §6. There is no way to dry-run this local
 Commit messages follow Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`). Keep
 modules small and single-purpose; the largest is `game.js` at ~380 lines. No dead code,
 no TODOs left behind, no `.env.local` in git.
+
+**Naming is split across three tiers on purpose — do not "unify" it.**
+
+| Tier | Value | Where |
+|---|---|---|
+| Consumer brand | **`Aimprint`** | `index.html` `<title>`/`<h1>`, `README.md`, `package.json` `name`, PRD title, Google consent-screen app name, OG tags |
+| Repository | **`PatternTrace-Simulation`** | Git remote only. Deliberately not renamed. |
+| Internal plumbing | **`aim-trainer*`** | Storage keys, IndexedDB, env vars, schema |
+
+The internal keys are **load-bearing and must not be renamed**:
+`'aim-trainer-outbox'` (`outbox.js`), `'aim-trainer.settings'` (`settings.js`),
+`'aim-trainer.free-sessions-used'` and `'aim-trainer.pending-google-consent'` (`main.js`).
+Renaming the IndexedDB database **orphans undelivered telemetry already queued in users'
+browsers, unrecoverably**; renaming the settings key silently resets everyone's DPI/sens.
+A future session seeing `Aimprint` in the UI and `aim-trainer` in storage is looking at a
+deliberate decision, not an oversight.

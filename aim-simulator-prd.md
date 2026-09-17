@@ -1,4 +1,4 @@
-# PRD — Aim Training Simulator (Frontend + Telemetry)
+# PRD — Aimprint (Frontend + Telemetry)
 
 > **Scope note for Claude Code:** This document covers **only** the browser-based aim trainer and its telemetry pipeline into Supabase. Do **not** implement ML models, Python backends, feature engineering, LLM coaching, or any inference API. Those are out of scope for this build.
 

@@ -1,4 +1,4 @@
-# Aim Trainer
+# Aimprint
 
 A browser-based 3D FPS aim trainer built with Vite and Three.js. Every attempt
 is timed, its mouse trajectory is buffered in memory, and the result is written

@@ -1,12 +1,27 @@
 # Label integrity — `subjects.kind` is default-deny
 
-> ## STATUS
-> **`schema.sql` has been edited. The database has NOT been changed.**
+> ## STATUS — verified against the live database 2026-09-17
+> **The migration IS applied. §4 has been run. Do not re-run it routinely.**
 >
-> Editing the file does nothing by itself — it is re-run by hand in the Supabase
-> SQL editor. Until you do that (§4), the live database still defaults every
-> signup to `'human'`. After the re-run, the manual steps in §5 are still
-> required before the data is trustworthy.
+> Confirmed by query, not by assumption:
+> - `subjects.kind` default is `'unknown'` (§6 check 3) ✅
+> - `subjects_kind_allowed` holds all three values; **no** leftover auto-named
+>   `subjects_kind_check` ✅
+> - `cohort`, `labeled_at`, `kind_source`, `merged_into` all present ✅
+> - `v_training_segments` exists, exposes `subject_kind_source` /
+>   `subject_cohort` / `subject_labeled_at`, and `is_human` is **three-valued**
+>   (`CASE` present) ✅ — this is the precondition §5.1 demands
+> - §5.2 pre-flight returned **0** rows needing backfill, so **§5.4 is a no-op**
+>   on this database ✅
+> - **0** orphaned `auth.users` rows (§4 step 2) ✅
+>
+> Remaining: §5.5 (validate the constraint) and §5.7 (divergence gate) — both
+> trivial at 2 subjects. §5.6 (labelling batches) waits until bot accounts and
+> human contributors actually exist.
+>
+> *An earlier version of this block said the database had NOT been changed. That
+> was stale and contradicted `CLAUDE.md`; the queries above resolved it. If you
+> restore from a backup predating 2026-09-17, re-verify before trusting this.*
 
 **What this document is.** Why the human-vs-bot ground-truth label was unsafe,
 what changed, and the runbook for applying it. `schema.sql` is authoritative for
