@@ -38,8 +38,20 @@ function sleep(ms) {
 // users, so the schema needs no change for this.
 
 let accessToken = null;
-// { status: 'loading' | 'signed_in' | 'signed_out', email, userId }
-let currentAuth = { status: client === null ? 'signed_out' : 'loading', email: null, userId: null };
+// { status: 'loading' | 'signed_in' | 'signed_out', email, userId, consented }
+//
+// `consented` mirrors profiles.consent_version: true once a version is stamped,
+// false when the row says nothing, and null while it is still being read. It is
+// deliberately SERVER state rather than a localStorage flag — the flag this
+// replaced could not survive a magic link opened on a different device from the
+// one that requested it, so consent silently went unrecorded while play
+// continued. Gating on the column makes "no consent row, no play" unconditional.
+let currentAuth = {
+  status: client === null ? 'signed_out' : 'loading',
+  email: null,
+  userId: null,
+  consented: null
+};
 const authListeners = new Set();
 
 // Memoised subject resolution for the current auth user. Reset to null on any
@@ -70,13 +82,44 @@ if (client !== null) {
     subjectPromise = null;
 
     if (session?.user) {
-      currentAuth = { status: 'signed_in', email: session.user.email ?? null, userId: session.user.id };
-    } else {
-      currentAuth = { status: 'signed_out', email: null, userId: null };
+      currentAuth = {
+        status: 'signed_in',
+        email: session.user.email ?? null,
+        userId: session.user.id,
+        consented: null
+      };
+      notifyAuth();
+      // Consent needs a round trip, so it lands in a second notification. The UI
+      // treats null as "still checking" and keeps Start disabled meanwhile.
+      refreshConsent();
+      return;
     }
 
+    currentAuth = { status: 'signed_out', email: null, userId: null, consented: null };
     notifyAuth();
   });
+}
+
+// Reads consent state for whoever is signed in now and republishes it.
+async function refreshConsent() {
+  const pending = currentAuth.userId;
+  const auth = await ensureAuth();
+
+  // A sign-out or a different sign-in may have landed while this was in flight;
+  // publishing then would attach one account's consent to another's session.
+  if (currentAuth.userId !== pending) return;
+
+  // Compared against CONSENT_VERSION rather than merely checked for presence, so
+  // bumping the version re-prompts everyone instead of silently accepting
+  // agreement to superseded wording — which is the whole point of the constant.
+  // Bumping it therefore blocks existing players until they agree again; that is
+  // intended, and is why CONSENT_VERSION moves only on a material change.
+  //
+  // A null auth means no profile row resolved — the account cannot record consent
+  // or telemetry at all. Reporting false (not null) stops the UI hanging on
+  // "checking" forever and surfaces the failure when consent is attempted.
+  currentAuth = { ...currentAuth, consented: auth !== null && auth.consentVersion === CONSENT_VERSION };
+  notifyAuth();
 }
 
 function resolveSubjectFor(user) {
@@ -84,13 +127,21 @@ function resolveSubjectFor(user) {
   // so it is normally present immediately; retry briefly against any lag.
   return (async () => {
     for (let attempt = 0; attempt < 5; attempt++) {
+      // consent_version rides along on the query that was already being made —
+      // the `profiles select own` policy covers both columns.
       const { data, error } = await client
         .from('profiles')
-        .select('subject_id')
+        .select('subject_id, consent_version')
         .eq('user_id', user.id)
         .maybeSingle();
 
-      if (error === null && data) return { userId: user.id, subjectId: data.subject_id };
+      if (error === null && data) {
+        return {
+          userId: user.id,
+          subjectId: data.subject_id,
+          consentVersion: data.consent_version ?? null
+        };
+      }
       await sleep(200);
     }
 
@@ -99,8 +150,9 @@ function resolveSubjectFor(user) {
   })();
 }
 
-// Resolves to { userId, subjectId } when a real account is signed in, or null.
-// Null is the "drop this write" signal — there is no anonymous fallback.
+// Resolves to { userId, subjectId, consentVersion } when a real account is
+// signed in, or null. Null is the "drop this write" signal — no anonymous
+// fallback exists.
 function ensureAuth() {
   if (client === null) return Promise.resolve(null);
   if (subjectPromise === null) {
@@ -178,16 +230,31 @@ export async function validateSession() {
 // Stamps consent on the caller's profile. The profiles update policy permits the
 // two consent columns (not the subject link), so this passes RLS. The value is
 // copied to subjects offline so it survives account deletion (see schema.sql).
+//
+// Returns {} or { error } like the other auth calls: this gates play now, so a
+// silent failure would leave the player stuck on a consent screen with no reason
+// given. On success the resolved subject is re-read, because the memoised one
+// still carries the pre-consent value.
 export async function recordConsent(version = CONSENT_VERSION) {
+  if (client === null) return { error: 'Supabase is not configured.' };
+
   const auth = await ensureAuth();
-  if (auth === null) return;
+  if (auth === null) return { error: 'No profile is linked to this account.' };
 
   const { error } = await client
     .from('profiles')
     .update({ consent_version: version, consented_at: new Date().toISOString() })
     .eq('user_id', auth.userId);
 
-  if (error) console.warn('Consent update failed:', error.message);
+  if (error) {
+    console.warn('Consent update failed:', error.message);
+    return { error: error.message };
+  }
+
+  subjectPromise = null;
+  currentAuth = { ...currentAuth, consented: true };
+  notifyAuth();
+  return {};
 }
 
 // ---------------------------------------------------------------------------

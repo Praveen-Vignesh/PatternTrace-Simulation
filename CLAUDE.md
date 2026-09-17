@@ -202,6 +202,23 @@ DOM.
 `constants.js` holds defaults and every tunable (FOV, spawn volume, flick timing). Numbers
 belong there or in `difficulty.js`, not inline.
 
+**The build is multi-page, not routed.** `vite.config.js` declares two entries —
+`index.html` (the game) and `privacy.html` (a static document with its own inline styles and
+**no JS at all**, verified: the built page references no bundle). There is still no router
+and none is wanted. `privacy.html` cannot import `style.css`, because `body { overflow:
+hidden }` there exists for the game and would make a text page unscrollable.
+
+`public/` holds `favicon.svg`, `robots.txt` and `sitemap.xml`, copied verbatim to `dist/`.
+`og-image.html` sits at the repo root and is **deliberately excluded** from
+`rollupOptions.input` — it is a 1200×630 template used to regenerate
+`public/og-image.png` by screenshot, not a shipped page.
+
+**Open Graph URLs must stay absolute.** `base: './'` makes every built asset path relative,
+which is what lets `dist/` run from any host — but crawlers do not resolve relative
+`og:image`/`og:url`, so those are hardcoded to `https://aimprint.vercel.app`. If the
+hostname ever changes again, those tags and `robots.txt`/`sitemap.xml` are the places that
+do **not** update themselves.
+
 **Most of the other markdown in this repo predates v2 and is stale — CLAUDE.md and the
 source are the authority.** **Correction, 2026-09-17: `README.md` is NOT among the stale
 files.** This section previously claimed it still documented Bot Mode (`?bot=linear`), the
@@ -276,6 +293,12 @@ to `schema.sql`. Read all of this for intent, never for current behaviour, and p
 - **`SESSION_COMPLETE_FRACTION` is mirrored by the offline derivation.** Change one without
   the other and the number the player sees disagrees with the number the pipeline records.
   The client's verdict is display-only and must never be persisted.
+- **The play gate is duplicated on purpose and the two halves must agree.** `canPlay()`
+  (`main.js`) guards the click path; `applyStartGate()` (`home.js`) disables the button.
+  Neither may grow a condition alone — a gate that passes in one and fails in the other is
+  either an unreachable button or a bypass. They are not collapsed into one because
+  `home.js` deliberately does not import `supabase.js`; auth reaches it only as injected
+  callbacks and rendered state.
 - **`subjects.kind` is default-deny; never write a model prediction back into it.** See
   "Label integrity" below. This is the newest invariant in the codebase and the easiest to
   violate by accident once the pipeline exists — a retrain that consumes its predecessor's
@@ -343,11 +366,26 @@ to `schema.sql`. Read all of this for intent, never for current behaviour, and p
   participant. Since the telemetry is the deliverable, capturing the first session beats
   the conversion a try-before-signup hook buys. The underlying guarantee is unchanged and
   still enforced server-side: **no auth session, no write.**
-- **Consent is stamped after the auth session exists, never before.** `main.js` calls
-  `recordConsent()` on a successful sign-in, and on a sign-up only when a session was
-  issued (`needsConfirmation !== true`); a confirmation-gated signup is stamped on its
-  later sign-in instead. The text version is `CONSENT_VERSION` in `constants.js` — bump it
-  when the wording materially changes, or old consent is silently treated as new.
+- **Consent is server state, and it gates play.** `profiles.consent_version` is the single
+  source of truth. `resolveSubjectFor()` reads it alongside `subject_id` (one query, the
+  `profiles select own` policy covers both), and it is published on the auth state as
+  `consented`. `canPlay()` in `main.js` is `signed_in && consented === true`;
+  `applyStartGate()` in `home.js` mirrors it. `consented === null` means the read is still
+  in flight and is treated as not-playable, never assumed either way.
+  - **No sign-in path stamps consent.** It is collected once from the `#account-consent`
+    block that appears after a session exists — the first moment it can actually be
+    written. The previous design called `recordConsent()` on every successful sign-in
+    while the checkbox only gated sign-**up** and Google, so consent was recorded for a
+    path where nobody ever ticked anything. That is fixed, not merely mitigated.
+  - **The localStorage `pending-google-consent` flag is gone.** It could not survive a
+    magic link opened on a different device from the one that requested it: no flag, no
+    stamp, and play continued regardless. Reading the column makes the rule unconditional.
+  - `refreshConsent()` guards against a race — a sign-out or a different sign-in landing
+    mid-flight would otherwise attach one account's consent to another's session.
+  - **`consented` compares against `CONSENT_VERSION`, not merely null-checks.** Bumping the
+    constant in `constants.js` therefore re-prompts every existing player. That is
+    intended: it is what stops agreement to superseded wording being silently honoured. Do
+    not weaken it to a presence check, and bump the version only on a material change.
 - `model/src/fetch_telemetry.py` (**not yet written**) is meant to select from the
   **`v_training_segments`** view with the service key. The view emits the **canonical**
   `subject_id` (`merged_into` collapsed) plus `board_trajectory`/`duration_ms`, and runs

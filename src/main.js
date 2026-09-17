@@ -71,34 +71,16 @@ function finishRun() {
 // deliverable, capturing the first session matters more than the conversion a
 // try-before-signup hook would buy.
 
-// Google sign-in is a full-page redirect: there is no in-page result to hang
-// recordConsent() off, unlike email/password's awaited signIn()/signUp(). This
-// flag survives the round trip in localStorage and is consumed on the first
-// signed_in state after return.
-const PENDING_GOOGLE_CONSENT_KEY = 'aim-trainer.pending-google-consent';
-
-function setPendingGoogleConsent() {
-  try {
-    window.localStorage.setItem(PENDING_GOOGLE_CONSENT_KEY, '1');
-  } catch {
-    // Storage unavailable: consent simply won't be auto-stamped on return.
-  }
-}
-
-function consumePendingGoogleConsent() {
-  try {
-    const pending = window.localStorage.getItem(PENDING_GOOGLE_CONSENT_KEY) === '1';
-    window.localStorage.removeItem(PENDING_GOOGLE_CONSENT_KEY);
-    return pending;
-  } catch {
-    return false;
-  }
-}
+// Consent is read from profiles.consent_version and carried on the auth state,
+// so no client-side flag tracks it. The localStorage flag this replaced could
+// not survive a magic link opened on a different device from the one that
+// requested it — consent then went unrecorded while play continued. Reading the
+// column instead makes the rule unconditional across every sign-in path.
 
 let authState = getAuthState();
 
 function canPlay() {
-  return authState.status === 'signed_in';
+  return authState.status === 'signed_in' && authState.consented === true;
 }
 
 function gatedLock() {
@@ -112,30 +94,24 @@ function gatedLock() {
 const home = createHome({
   settings,
   auth: {
-    // Consent is stamped after a session exists. signIn re-affirms it; signUp
-    // stamps immediately when a session is issued, or on the later signIn if the
-    // project requires email confirmation.
-    async onSignIn({ email, password }) {
-      const result = await signIn({ email, password });
-      if (result.error === undefined) recordConsent();
-      return result;
+    // None of the sign-in paths stamp consent. It is collected once, explicitly,
+    // from the consent block that appears after a session exists — which is also
+    // the first moment it can be written to profiles. Stamping it on sign-in (as
+    // this did) recorded agreement for a path where nothing was ever ticked.
+    onSignIn({ email, password }) {
+      return signIn({ email, password });
     },
-    async onSignUp({ email, password }) {
-      const result = await signUp({ email, password });
-      if (result.error === undefined && result.needsConfirmation !== true) recordConsent();
-      return result;
+    onSignUp({ email, password }) {
+      return signUp({ email, password });
     },
     onSignOut() {
       return signOut();
     },
-    // No result to check here: signInWithOAuth navigates away on success, so
-    // the checkbox is read and the redirect started, and consent is stamped
-    // when the session actually lands (see onAuthChange below).
-    async onGoogleSignIn() {
-      setPendingGoogleConsent();
-      const result = await signInWithGoogle();
-      if (result.error) consumePendingGoogleConsent();
-      return result;
+    onGoogleSignIn() {
+      return signInWithGoogle();
+    },
+    onConsent() {
+      return recordConsent();
     }
   },
   onStart: gatedLock,
@@ -146,7 +122,6 @@ const home = createHome({
 
 onAuthChange((state) => {
   authState = state;
-  if (state.status === 'signed_in' && consumePendingGoogleConsent()) recordConsent();
   home.renderAccount({ authState });
 });
 

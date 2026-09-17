@@ -4,7 +4,32 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Aimprint</title>
+  <title>Aimprint — browser FPS aim trainer</title>
+  <meta name="description"
+    content="A free browser-based 3D FPS aim trainer. Five routines, timed sessions, and your own sensitivity — no download, no install." />
+  <meta name="theme-color" content="#1a1a1a" />
+  <link rel="canonical" href="https://aimprint.vercel.app/" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+  <!-- Open Graph. Absolute URLs are mandatory here: crawlers do not resolve
+       relative paths, and vite.config.js sets base:'./' so everything else on
+       the page is relative. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Aimprint" />
+  <meta property="og:title" content="Aimprint — browser FPS aim trainer" />
+  <meta property="og:description"
+    content="A free browser-based 3D FPS aim trainer. Five routines, timed sessions, and your own sensitivity — no download, no install." />
+  <meta property="og:url" content="https://aimprint.vercel.app/" />
+  <meta property="og:image" content="https://aimprint.vercel.app/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Aimprint — browser FPS aim trainer" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Aimprint — browser FPS aim trainer" />
+  <meta name="twitter:description"
+    content="A free browser-based 3D FPS aim trainer. Five routines, timed sessions, and your own sensitivity — no download, no install." />
+  <meta name="twitter:image" content="https://aimprint.vercel.app/og-image.png" />
 </head>
 
 <body>
@@ -39,10 +64,9 @@
             <input id="password-input" type="password" autocomplete="current-password"
               placeholder="At least 6 characters" />
           </div>
-          <label class="consent">
-            <input id="consent-checkbox" type="checkbox" />
-            <span>I agree to my aim telemetry being collected and used for research.</span>
-          </label>
+          <p class="note">Aimprint records your mouse movement during training and uses
+            it for research. You'll be asked to agree once you're signed in —
+            <a href="/privacy.html" target="_blank" rel="noopener">what's recorded</a>.</p>
           <div class="auth-actions">
             <button id="signin-button" class="secondary">Sign in</button>
             <button id="signup-button" class="primary">Create account</button>
@@ -50,6 +74,19 @@
           <p class="muted">or</p>
           <button id="google-signin-button" class="secondary">Sign in with Google</button>
           <p id="auth-message" class="note" role="alert"></p>
+        </div>
+
+        <div id="account-consent" class="hidden">
+          <p class="muted">Signed in as <strong id="consent-email">&mdash;</strong></p>
+          <label class="consent">
+            <input id="consent-checkbox" type="checkbox" />
+            <span>I agree to my aim telemetry being collected and used for research, as
+              described in the <a href="/privacy.html" target="_blank" rel="noopener">privacy
+                notice</a>.</span>
+          </label>
+          <button id="consent-button" class="primary">Agree and continue</button>
+          <p id="consent-message" class="note" role="alert"></p>
+          <button id="consent-signout-button" class="secondary">Sign out</button>
         </div>
 
         <div id="account-signed-in" class="hidden">

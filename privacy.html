@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy &amp; how it works — Aimprint</title>
+  <meta name="description"
+    content="What Aimprint records during training, why it records it, and how to have it deleted." />
+  <meta name="theme-color" content="#1a1a1a" />
+  <link rel="canonical" href="https://aimprint.vercel.app/privacy.html" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+  <meta property="og:type" content="article" />
+  <meta property="og:site_name" content="Aimprint" />
+  <meta property="og:title" content="Privacy &amp; how it works — Aimprint" />
+  <meta property="og:description"
+    content="What Aimprint records during training, why it records it, and how to have it deleted." />
+  <meta property="og:url" content="https://aimprint.vercel.app/privacy.html" />
+  <meta property="og:image" content="https://aimprint.vercel.app/og-image.png" />
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #1a1a1a;
+      color: #dcdcdc;
+      font-family: Consolas, "Courier New", monospace;
+      line-height: 1.65;
+      padding: 48px 16px 96px;
+    }
+
+    main { max-width: 68ch; margin: 0 auto; }
+
+    h1 { font-size: 1.6rem; letter-spacing: 0.02em; margin-bottom: 8px; }
+    h2 { font-size: 1.05rem; color: #ff5555; margin: 40px 0 12px; }
+    h3 { font-size: 0.95rem; margin: 24px 0 8px; }
+
+    p, li { margin-bottom: 12px; }
+    ul { padding-left: 1.3em; }
+
+    a { color: #ff5555; }
+    a:hover { color: #ff8888; }
+
+    .muted { color: #8c8c8c; }
+    .lede { margin-bottom: 8px; }
+
+    .updated {
+      color: #8c8c8c;
+      font-size: 0.85rem;
+      margin-bottom: 40px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid #333333;
+    }
+
+    .callout {
+      border: 1px solid #333333;
+      border-left: 3px solid #ff5555;
+      padding: 16px 18px;
+      margin: 24px 0;
+      background: #202020;
+    }
+
+    .callout p:last-child { margin-bottom: 0; }
+
+    code {
+      background: #202020;
+      border: 1px solid #333333;
+      padding: 1px 5px;
+      font-size: 0.9em;
+    }
+
+    .back { display: inline-block; margin-top: 48px; }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Privacy &amp; how it works</h1>
+    <p class="updated">Aimprint · last updated 17 September 2026 · consent version <code>v1-2026-09</code></p>
+
+    <p class="lede">Aimprint is a browser aim trainer built to collect research data. It is not a
+      product with analytics bolted on — recording how you move the mouse <em>is</em> the point, and
+      this page explains exactly what that means before you agree to it.</p>
+
+    <h2>What is recorded</h2>
+
+    <p>Recording only happens while a training run is active, and only for a signed-in account.
+      Signed out, nothing is written at all — that is enforced on the server, not just in the page.</p>
+
+    <h3>While you are training</h3>
+    <ul>
+      <li>Once per rendered frame: a timestamp, the raw mouse movement counts for that frame, the
+        camera's resulting horizontal and vertical angles, the position of the target you are
+        engaging, and whether your crosshair was on a target.</li>
+      <li>Raw pointer samples between frames, at your mouse's polling rate, for finer timing.</li>
+      <li>For each attempt: whether it was a hit, a miss, or a timeout; how long it took you to
+        click; how long your crosshair rested on the target first; and how far from the centre the
+        shot landed.</li>
+    </ul>
+
+    <h3>About your setup</h3>
+    <ul>
+      <li>Your mouse DPI and in-game sensitivity, and the centimetres-per-360° they work out to.</li>
+      <li>Your screen resolution, pixel ratio, display refresh rate, browser user agent, and
+        platform.</li>
+      <li>Which routine, difficulty and session length you chose.</li>
+    </ul>
+
+    <p class="muted">Hardware details are recorded because raw mouse counts are meaningless without
+      them — the same physical motion produces different numbers at different DPI settings.</p>
+
+    <h3>Your account</h3>
+    <ul>
+      <li>Your email address, held by the authentication system so you can sign in.</li>
+      <li>The version of this consent notice you agreed to, and when.</li>
+    </ul>
+
+    <h2>What is never recorded</h2>
+    <ul>
+      <li>Anything outside the training page — no keystrokes, no other tabs, no clipboard, no
+        screen or webcam capture.</li>
+      <li>Your mouse movement outside an active run, including on the home screen.</li>
+      <li>Any payment information. Aimprint is free and takes no payments.</li>
+      <li>Advertising or third-party tracking. There are no ad networks, no analytics scripts, and
+        no cookies beyond the one that keeps you signed in.</li>
+    </ul>
+
+    <h2>Be aware: this data can identify you</h2>
+
+    <div class="callout">
+      <p>The way a person moves a mouse is distinctive, in roughly the way handwriting is.
+        Research suggests that with enough samples it can be used to tell one individual from
+        another. That is precisely what this project studies, so you should treat the recordings
+        as <strong>potentially identifying information about your body</strong>, not as anonymous
+        gameplay statistics.</p>
+      <p>Please only take part if you are comfortable with that.</p>
+    </div>
+
+    <h2>Why it is collected</h2>
+
+    <p>Two research questions:</p>
+    <ul>
+      <li><strong>Telling humans from automated input.</strong> Building a classifier that can
+        distinguish a person aiming from a script aiming — the underlying problem behind cheat
+        detection in competitive games.</li>
+      <li><strong>Whether aim can act as a behavioural signature.</strong> Investigating whether
+        movement patterns are consistent enough within one person, and distinct enough between
+        people, to help confirm identity.</li>
+    </ul>
+
+    <p>This is independent research. Data is not sold, rented, or shared with advertisers, and no
+      automated decision is made about you from it.</p>
+
+    <h2>How it is stored</h2>
+    <ul>
+      <li>Data lives in a hosted Postgres database (Supabase), transmitted over HTTPS.</li>
+      <li>Your recordings attach to a <strong>pseudonymous subject identifier</strong>, kept
+        deliberately separate from your login. The training data does not carry your email.</li>
+      <li>Records are append-only: neither you nor anyone else can quietly rewrite past sessions,
+        because a reference set that can be edited is not a reference set.</li>
+      <li>Your own recordings are <strong>not downloadable, including by you</strong>. That is
+        intentional — movement traces are the raw material of a behavioural signature, and an
+        export endpoint would be a way to obtain and replay someone's. Summary statistics are
+        what surface back to you.</li>
+    </ul>
+
+    <h2>Your choices</h2>
+
+    <h3>Consent</h3>
+    <p>You are asked to agree once, after signing in, before your first run. You cannot train
+      without agreeing. If this notice changes in a way that materially affects what is collected,
+      the consent version changes and you will be asked again.</p>
+
+    <h3>Withdrawing</h3>
+    <p>You can stop at any time by simply not training; nothing is recorded when you are not in a
+      run.</p>
+
+    <h3>Deletion</h3>
+    <p>Email <a href="mailto:aimprint.project@gmail.com">aimprint.project@gmail.com</a> from your
+      registered address and ask. Two options:</p>
+    <ul>
+      <li><strong>Delete the account.</strong> This removes the link between you and your
+        recordings, leaving the remaining data genuinely anonymous rather than merely
+        pseudonymous.</li>
+      <li><strong>Delete the recordings too.</strong> If you want the training data itself erased,
+        say so explicitly and it will be removed.</li>
+    </ul>
+    <p>Say which you want, because the first does not do the second.</p>
+
+    <h3>Access</h3>
+    <p>You can ask what is held about you. As above, raw movement traces are not exported, for the
+      security reason given — a description of what exists is provided instead.</p>
+
+    <h2>Contact</h2>
+    <p>Questions, concerns, or a deletion request:
+      <a href="mailto:aimprint.project@gmail.com">aimprint.project@gmail.com</a>.</p>
+
+    <p class="muted">Aimprint is a student research project, not a company. If something here is
+      unclear or you think it is wrong, please say so — that feedback is genuinely useful.</p>
+
+    <a class="back" href="/">&larr; Back to Aimprint</a>
+  </main>
+</body>
+
+</html>

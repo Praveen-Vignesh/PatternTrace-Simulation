@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Aimprint">
+  <rect width="64" height="64" rx="12" fill="#1a1a1a"/>
+  <circle cx="32" cy="32" r="17" fill="none" stroke="#ff5555" stroke-width="5"/>
+  <circle cx="32" cy="32" r="5" fill="#ff5555"/>
+  <g stroke="#dcdcdc" stroke-width="4" stroke-linecap="round">
+    <path d="M32 6v9"/>
+    <path d="M32 49v9"/>
+    <path d="M6 32h9"/>
+    <path d="M49 32h9"/>
+  </g>
+</svg>

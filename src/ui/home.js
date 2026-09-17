@@ -7,9 +7,10 @@ import { SESSION_DURATIONS_MIN, SESSION_COMPLETE_FRACTION } from '../constants.j
 // Owns the home, pause and results screens: renders the routine catalogue,
 // sensitivity settings and the account panel, writes setting changes straight
 // back into the store, and gates Start on the account state. `auth` supplies the
-// three async account actions (onSignIn/onSignUp/onSignOut), each resolving to a
-// result object ({ error } / { needsConfirmation } / {}) that this module
-// displays. `onEndRun` finishes a run for good; `onMenu` only changes screen.
+// async account actions (onSignIn/onSignUp/onGoogleSignIn/onConsent/onSignOut),
+// each resolving to a result object ({ error } / { needsConfirmation } / {}) that
+// this module displays. `onEndRun` finishes a run for good; `onMenu` only changes
+// screen.
 export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu }) {
   const homeScreen = document.getElementById('home');
   const pauseScreen = document.getElementById('pause');
@@ -23,12 +24,18 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   const edpiReadout = document.getElementById('edpi-readout');
   const cm360Readout = document.getElementById('cm360-readout');
 
-  // Account panel.
+  // Account panel. Three mutually exclusive blocks: signed out, signed in but
+  // not yet consented, and fully ready.
   const signedOutBlock = document.getElementById('account-signed-out');
+  const consentBlock = document.getElementById('account-consent');
   const signedInBlock = document.getElementById('account-signed-in');
   const emailInput = document.getElementById('email-input');
   const passwordInput = document.getElementById('password-input');
   const consentCheckbox = document.getElementById('consent-checkbox');
+  const consentButton = document.getElementById('consent-button');
+  const consentMessage = document.getElementById('consent-message');
+  const consentEmail = document.getElementById('consent-email');
+  const consentSignoutButton = document.getElementById('consent-signout-button');
   const signinButton = document.getElementById('signin-button');
   const signupButton = document.getElementById('signup-button');
   const googleButton = document.getElementById('google-signin-button');
@@ -149,10 +156,6 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
       setAuthMessage('Enter an email and password to create an account.', true);
       return;
     }
-    if (consentCheckbox.checked === false) {
-      setAuthMessage('Please agree to telemetry collection before creating an account.', true);
-      return;
-    }
 
     setAuthBusy(true);
     setAuthMessage('Creating your account…');
@@ -166,11 +169,6 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   }
 
   async function handleGoogleSignIn() {
-    if (consentCheckbox.checked === false) {
-      setAuthMessage('Please agree to telemetry collection before continuing.', true);
-      return;
-    }
-
     setAuthBusy(true);
     setAuthMessage('Redirecting to Google…');
     const result = await auth.onGoogleSignIn();
@@ -179,26 +177,57 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
     if (result && result.error) setAuthMessage(result.error, true);
   }
 
+  // Consent is collected here, after a session exists, because this is the first
+  // point at which it can actually be written to profiles. Asking before signup
+  // would only have produced a promise nothing recorded.
+  async function handleConsent() {
+    if (consentCheckbox.checked === false) {
+      consentMessage.textContent = 'Tick the box to agree before continuing.';
+      consentMessage.classList.add('error');
+      return;
+    }
+
+    consentButton.disabled = true;
+    consentMessage.classList.remove('error');
+    consentMessage.textContent = 'Saving…';
+    const result = await auth.onConsent();
+    consentButton.disabled = false;
+
+    if (result && result.error) {
+      consentMessage.textContent = result.error;
+      consentMessage.classList.add('error');
+      return;
+    }
+    consentMessage.textContent = '';
+  }
+
   signinButton.addEventListener('click', handleSignIn);
   signupButton.addEventListener('click', handleSignUp);
   googleButton.addEventListener('click', handleGoogleSignIn);
+  consentButton.addEventListener('click', handleConsent);
   signoutButton.addEventListener('click', () => auth.onSignOut());
+  consentSignoutButton.addEventListener('click', () => auth.onSignOut());
 
-  // Start is gated on being signed in. This mirrors canPlay() in main.js, which
-  // guards the click path; both must agree, so neither grows a second condition
-  // alone.
+  // Start is gated on being signed in AND consented. This mirrors canPlay() in
+  // main.js, which guards the click path; both must agree, so neither grows a
+  // condition alone. `consented === null` means the profile read is still in
+  // flight — treated as not-yet-playable rather than assumed either way.
   function applyStartGate() {
     const signedIn = lastAuthState.status === 'signed_in';
     const loading = lastAuthState.status === 'loading';
+    const consented = lastAuthState.consented === true;
+    const checkingConsent = signedIn && lastAuthState.consented === null;
 
-    startButton.disabled = loading || signedIn === false;
+    startButton.disabled = loading || checkingConsent || signedIn === false || consented === false;
 
-    if (loading) {
+    if (loading || checkingConsent) {
       startNote.textContent = 'Checking your session…';
-    } else if (signedIn) {
-      startNote.textContent = 'Esc pauses the clock. Left click to shoot.';
-    } else {
+    } else if (signedIn === false) {
       startNote.textContent = 'Create an account to start training.';
+    } else if (consented === false) {
+      startNote.textContent = 'Agree to telemetry collection to start training.';
+    } else {
+      startNote.textContent = 'Esc pauses the clock. Left click to shoot.';
     }
   }
 
@@ -235,10 +264,20 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
       lastAuthState = authState;
 
       const signedIn = authState.status === 'signed_in';
+      // While consent is still being read, show the ready block rather than
+      // flashing the consent prompt at someone who has already agreed; Start
+      // stays disabled throughout, so nothing is reachable early either way.
+      const needsConsent = signedIn && authState.consented === false;
+      const ready = signedIn && authState.consented !== false;
+
       signedOutBlock.classList.toggle('hidden', signedIn);
-      signedInBlock.classList.toggle('hidden', signedIn === false);
+      consentBlock.classList.toggle('hidden', needsConsent === false);
+      signedInBlock.classList.toggle('hidden', ready === false);
+
       if (signedIn) {
-        accountEmail.textContent = authState.email ?? 'your account';
+        const label = authState.email ?? 'your account';
+        accountEmail.textContent = label;
+        consentEmail.textContent = label;
         setAuthMessage('');
       }
 

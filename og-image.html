@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Aimprint OG image template — 1200x630</title>
+  <!--
+    NOT part of the build. This file is deliberately absent from
+    vite.config.js's rollupOptions.input, so it never ships to dist/.
+
+    It exists to produce public/og-image.png, the social card image referenced
+    by the Open Graph tags in index.html and privacy.html.
+
+    To regenerate:
+      1. npm run dev
+      2. open http://localhost:5173/og-image.html
+      3. screenshot the #card element at exactly 1200x630
+         (DevTools > ... > Capture node screenshot, with #card selected)
+      4. save as public/og-image.png
+  -->
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0d0d0d;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    #card {
+      width: 1200px;
+      height: 630px;
+      background: #1a1a1a;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 0 88px;
+    }
+
+    /* Faint depth grid, echoing the spawn volume the targets live in. */
+    #card::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(to right, #262626 1px, transparent 1px),
+        linear-gradient(to bottom, #262626 1px, transparent 1px);
+      background-size: 60px 60px;
+      opacity: 0.55;
+    }
+
+    .content { position: relative; z-index: 1; }
+
+    h1 {
+      font-size: 108px;
+      letter-spacing: -0.02em;
+      color: #f2f2f2;
+      line-height: 1;
+      margin-bottom: 28px;
+    }
+
+    h1 .dot { color: #ff5555; }
+
+    p {
+      font-size: 34px;
+      color: #9a9a9a;
+      line-height: 1.4;
+      max-width: 22ch;
+    }
+
+    .rule {
+      width: 96px;
+      height: 6px;
+      background: #ff5555;
+      margin-bottom: 40px;
+    }
+
+    .badge {
+      position: absolute;
+      left: 88px;
+      bottom: 56px;
+      font-size: 24px;
+      color: #6e6e6e;
+      letter-spacing: 0.08em;
+      z-index: 1;
+    }
+
+    /* Target motif, mirroring favicon.svg */
+    .target {
+      position: absolute;
+      right: 96px;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="card">
+    <div class="content">
+      <div class="rule"></div>
+      <h1>Aimprint<span class="dot">.</span></h1>
+      <p>Browser FPS aim trainer. No download.</p>
+    </div>
+
+    <svg class="target" width="300" height="300" viewBox="0 0 64 64" aria-hidden="true">
+      <circle cx="32" cy="32" r="25" fill="none" stroke="#2e2e2e" stroke-width="2" />
+      <circle cx="32" cy="32" r="17" fill="none" stroke="#ff5555" stroke-width="5" />
+      <circle cx="32" cy="32" r="5" fill="#ff5555" />
+      <g stroke="#dcdcdc" stroke-width="3" stroke-linecap="round">
+        <path d="M32 2v10" />
+        <path d="M32 52v10" />
+        <path d="M2 32h10" />
+        <path d="M52 32h10" />
+      </g>
+    </svg>
+
+    <div class="badge">aimprint.vercel.app</div>
+  </div>
+</body>
+
+</html>
