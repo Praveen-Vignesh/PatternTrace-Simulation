@@ -22,9 +22,13 @@ npm install
    v2 tables (`subjects`, `profiles`, `sessions`, `segments`, `session_metrics`),
    the signup trigger, and the append-only RLS policies. `anon` gets nothing:
    data is only ever written for a signed-in account.
-   In **Authentication -> Providers -> Email**, keep the Email provider enabled;
-   for instant play also turn "Confirm email" off, or a new account has no
-   session until the emailed link is clicked and its first run cannot be saved.
+   In **Authentication -> Providers -> Email**, keep the Email provider enabled.
+   "Confirm email" is **on**: a new account has no session until the emailed link
+   is clicked, which is deliberate — a verified address is how a participant is
+   invited back for a later session, and repeat sessions matter more here than
+   signup speed. Playing requires an account, so no run is ever lost to this.
+   Confirmation mail needs **custom SMTP** (Authentication -> Emails); the
+   built-in sender is capped at 2 emails/hour and will not work for real signups.
 3. Copy `.env.example` to `.env.local` and fill in your project URL and anon key:
 
 ```powershell

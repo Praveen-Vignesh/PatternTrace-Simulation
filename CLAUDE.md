@@ -44,7 +44,8 @@ Adding a dependency or a framework *there* is a spec violation, not an improveme
   a durable IndexedDB-backed outbox with retry/backoff, and DPI-independent sensitivity
   tracking.
 - Real email/password + Google OAuth accounts (`src/supabase.js`), consent stamping, and
-  a free-session gate before the signup wall.
+  a hard sign-in gate — **playing requires an account; there is no free-run allowance**
+  (the old `FREE_SESSION_LIMIT` trial was removed 2026-09-17, see "Architecture").
 - The in-browser Bot Mode has been **removed entirely** — no `?bot=`, no `bot.js`.
 
 **Database (`schema.sql`) — the v2 shape, plus a label-integrity fix layered on top:**
@@ -102,7 +103,7 @@ dependencies. See "Verifying changes" below for how this codebase is actually ex
 
 Plain ES modules, one factory function per file, no classes and no shared mutable state
 between modules. `main.js` is the only composition point: it builds the scene, controls
-and HUD, injects them into `createGame()`, wires the account panel and free-session gate,
+and HUD, injects them into `createGame()`, wires the account panel and the sign-in gate,
 and owns the `requestAnimationFrame` loop.
 
 Two scoring shapes exist, and each routine declares which with a `kind` field.
@@ -134,8 +135,8 @@ completed** — but the client cannot record that. There is no update policy on 
 the client stamps *intent* (`planned_duration_ms`) at insert and the verdict is **derived
 offline**, exactly as `ended_at` is. The results screen shows a live figure as *progress*,
 never as a saved record, and persists it nowhere: the offline number is computed from
-delivered segments and legitimately differs (most starkly on a free run, which writes no
-rows at all).
+delivered segments and legitimately differs (a segment still sitting in the outbox is not
+yet a delivered row).
 
 **One row is one *segment*, not one mesh — the unified telemetry shape.** A segment is a
 span of play that closes with an `outcome`: destructible routines close on a click
@@ -332,12 +333,16 @@ to `schema.sql`. Read all of this for intent, never for current behaviour, and p
 - `src/main.js` gathers the session hardware block (dpi/sens/`cm360`, `CAMERA_FOV`, a
   rolling `refresh_hz` estimate off the render loop, coarse device fingerprint, plus
   `app_version`/`sampling_version`) and passes it to `game.start({ session })` alongside
-  `plannedDurationMs`. It also owns the account panel wiring and the free-session gate
-  (`FREE_SESSION_LIMIT` runs before the signup wall; those persist nothing). A free run is
-  consumed **once per run**, in the `lock` handler's new-run branch — not on every lock (which
-  made pausing cost a trial) and not in `onStart` (where `requestLock` swallowing a denied
-  lock would burn one on a lock that never happened). The counter lives in localStorage and
-  is a funnel, not a boundary — the actual guarantee is "no auth session, no write".
+  `plannedDurationMs`. It also owns the account panel wiring and the **sign-in gate**:
+  `canPlay()` is simply `authState.status === 'signed_in'`. The gate is **duplicated by
+  design** — `canPlay()` guards the click path in `main.js`, `applyStartGate()` disables the
+  button in `home.js` — and the two must agree, so neither may grow a condition alone.
+  The `FREE_SESSION_LIMIT` trial that used to precede this was **removed 2026-09-17**: it
+  wrote nothing (no auth session, no subject to attach to), so every run it granted was
+  play the project could not learn from — roughly twenty minutes discarded per recruited
+  participant. Since the telemetry is the deliverable, capturing the first session beats
+  the conversion a try-before-signup hook buys. The underlying guarantee is unchanged and
+  still enforced server-side: **no auth session, no write.**
 - **Consent is stamped after the auth session exists, never before.** `main.js` calls
   `recordConsent()` on a successful sign-in, and on a sign-up only when a session was
   issued (`needsConfirmation !== true`); a confirmation-gated signup is stamped on its
@@ -351,9 +356,24 @@ to `schema.sql`. Read all of this for intent, never for current behaviour, and p
   with `where is_human is not null`, never coerced or imputed. The view also emits
   `subject_kind_source`, `subject_cohort` and `subject_labeled_at`.
 
-**This requires the Email provider enabled in the Supabase dashboard**, and for instant play
-"Confirm email" disabled (Authentication → Providers → Email) — otherwise a new signup has no
-session until the emailed link is clicked, and its first session cannot be saved. With no
+**This requires the Email provider enabled in the Supabase dashboard.** **"Confirm email" is
+ON as of 2026-09-17** (Authentication → Providers → Email) — a deliberate reversal of this
+file's earlier advice to disable it, made once custom SMTP was working. Rationale: a
+verified address is how a participant gets invited back for session 2, and
+sessions-per-subject across separate days is the binding constraint on the biometric model,
+so it is worth more than signup conversion.
+
+Consequences, both of which are fine and neither of which loses data:
+- A new signup has **no session** until the emailed link is clicked, so `signUp()` returns
+  `needsConfirmation: true` and `recordConsent()` defers to the later sign-in.
+- The player cannot start a run until confirmed. Combined with the removal of the free-run
+  trial, this means **every run now belongs to an authenticated subject and is saved** —
+  the old "first session cannot be saved" warning no longer applies, because there is no
+  longer an unauthenticated run to lose.
+
+Custom SMTP is live on `smtp.gmail.com:587` with a Gmail App Password. Note the built-in
+Supabase mailer is capped at **2 emails/hour** and is not usable for real signups; custom
+SMTP raises that to 30/hour by default (Authentication → Rate Limits). With no
 credentials or no signed-in account the game still runs and simply drops rows.
 `sessions.ended_at` and `poll_hz` are never written by the client: there is no update policy
 (append-only), and both are derived offline with the service key.
@@ -600,7 +620,9 @@ no TODOs left behind, no `.env.local` in git.
 
 The internal keys are **load-bearing and must not be renamed**:
 `'aim-trainer-outbox'` (`outbox.js`), `'aim-trainer.settings'` (`settings.js`),
-`'aim-trainer.free-sessions-used'` and `'aim-trainer.pending-google-consent'` (`main.js`).
+and `'aim-trainer.pending-google-consent'` (`main.js`). (`'aim-trainer.free-sessions-used'`
+was retired with the free-run trial on 2026-09-17 and no longer exists; any value still
+sitting in a returning visitor's localStorage is inert and is never read.)
 Renaming the IndexedDB database **orphans undelivered telemetry already queued in users'
 browsers, unrecoverably**; renaming the settings key silently resets everyone's DPI/sens.
 A future session seeing `Aimprint` in the UI and `aim-trainer` in storage is looking at a

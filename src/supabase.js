@@ -293,7 +293,7 @@ export async function insertSession(payload) {
 
 // Awaits the session id, then hands the row to the durable outbox. Never blocks
 // the game loop: the caller passes the still-in-flight session promise. A null
-// session id (dropped, or unauthenticated free session) discards the row.
+// session id (the insert was dropped, or no auth session resolved) discards the row.
 export async function insertSegment(sessionIdPromise, payload) {
   if (outbox === null) return;
 

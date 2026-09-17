@@ -50,10 +50,9 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   const difficultyButtons = new Map();
   const durationButtons = new Map();
 
-  // Latest inputs to the Start gate, so a settings-only re-render does not need
-  // them threaded through.
+  // Latest input to the Start gate, so a settings-only re-render does not need
+  // it threaded through.
   let lastAuthState = { status: 'loading', email: null };
-  let lastFreeRemaining = 0;
 
   for (const routine of ROUTINES) {
     const tile = document.createElement('button');
@@ -185,24 +184,21 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   googleButton.addEventListener('click', handleGoogleSignIn);
   signoutButton.addEventListener('click', () => auth.onSignOut());
 
-  // Start is gated: signed-in players always may; signed-out players may until
-  // their free sessions run out, and those persist nothing.
+  // Start is gated on being signed in. This mirrors canPlay() in main.js, which
+  // guards the click path; both must agree, so neither grows a second condition
+  // alone.
   function applyStartGate() {
     const signedIn = lastAuthState.status === 'signed_in';
     const loading = lastAuthState.status === 'loading';
-    const canStart = signedIn || lastFreeRemaining > 0;
 
-    startButton.disabled = loading || canStart === false;
+    startButton.disabled = loading || signedIn === false;
 
     if (loading) {
       startNote.textContent = 'Checking your session…';
     } else if (signedIn) {
       startNote.textContent = 'Esc pauses the clock. Left click to shoot.';
-    } else if (lastFreeRemaining > 0) {
-      const plural = lastFreeRemaining === 1 ? 'run' : 'runs';
-      startNote.textContent = `${lastFreeRemaining} free ${plural} left — create an account to save your training data.`;
     } else {
-      startNote.textContent = 'Create an account to keep training — free runs used up.';
+      startNote.textContent = 'Create an account to start training.';
     }
   }
 
@@ -234,10 +230,9 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
     },
 
     // Re-renders the account panel and the Start gate. Called on every auth
-    // change and whenever the free-session count moves.
-    renderAccount({ authState, freeSessionsRemaining }) {
+    // change.
+    renderAccount({ authState }) {
       lastAuthState = authState;
-      lastFreeRemaining = freeSessionsRemaining;
 
       const signedIn = authState.status === 'signed_in';
       signedOutBlock.classList.toggle('hidden', signedIn);
@@ -258,7 +253,7 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
 
     // Worded as progress, never as a saved record. The authoritative completion
     // verdict is derived offline from delivered segments and will legitimately
-    // differ — most starkly on a free run, which writes no rows at all.
+    // differ — a segment still in the outbox is not yet a delivered row.
     renderResults(summary) {
       if (summary === null) return;
 

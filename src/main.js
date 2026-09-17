@@ -26,7 +26,6 @@ import {
   CAMERA_FOV,
   APP_VERSION,
   SAMPLING_VERSION,
-  FREE_SESSION_LIMIT,
   MS_PER_MINUTE
 } from './constants.js';
 
@@ -63,35 +62,14 @@ function finishRun() {
 }
 
 // ---------------------------------------------------------------------------
-// Accounts and free sessions
+// Accounts
 // ---------------------------------------------------------------------------
-// Data collection requires a real account. A visitor may play FREE_SESSION_LIMIT
-// sessions first; those never authenticate, so insertSession() drops and no rows
-// are written. The count is per-browser in localStorage — a soft funnel, not a
-// security boundary (the data guarantee comes from "no auth = no writes").
-
-const FREE_SESSIONS_KEY = 'aim-trainer.free-sessions-used';
-
-function freeSessionsUsed() {
-  try {
-    return Number(window.localStorage.getItem(FREE_SESSIONS_KEY)) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-function consumeFreeSession() {
-  try {
-    window.localStorage.setItem(FREE_SESSIONS_KEY, String(freeSessionsUsed() + 1));
-  } catch {
-    // A browser that refuses storage simply gets unlimited free sessions; still
-    // no data is written, so the collection guarantee holds regardless.
-  }
-}
-
-function freeSessionsRemaining() {
-  return Math.max(0, FREE_SESSION_LIMIT - freeSessionsUsed());
-}
+// Playing requires a real account, with no free-run allowance. The trial that
+// used to sit here wrote nothing (no auth session, no subject to attach to), so
+// every run it granted was play this project could not learn from — roughly
+// twenty minutes discarded per recruited participant. Since the data is the
+// deliverable, capturing the first session matters more than the conversion a
+// try-before-signup hook would buy.
 
 // Google sign-in is a full-page redirect: there is no in-page result to hang
 // recordConsent() off, unlike email/password's awaited signIn()/signUp(). This
@@ -120,12 +98,12 @@ function consumePendingGoogleConsent() {
 let authState = getAuthState();
 
 function canPlay() {
-  return authState.status === 'signed_in' || freeSessionsRemaining() > 0;
+  return authState.status === 'signed_in';
 }
 
 function gatedLock() {
   if (canPlay() === false) {
-    home.renderAccount({ authState, freeSessionsRemaining: freeSessionsRemaining() });
+    home.renderAccount({ authState });
     return;
   }
   requestLock(controls);
@@ -169,7 +147,7 @@ const home = createHome({
 onAuthChange((state) => {
   authState = state;
   if (state.status === 'signed_in' && consumePendingGoogleConsent()) recordConsent();
-  home.renderAccount({ authState, freeSessionsRemaining: freeSessionsRemaining() });
+  home.renderAccount({ authState });
 });
 
 // One sensitivity value, two consumers historically; now just the player. Kept
@@ -181,7 +159,7 @@ settings.subscribe((state) => {
 });
 
 home.render(settings.get());
-home.renderAccount({ authState, freeSessionsRemaining: freeSessionsRemaining() });
+home.renderAccount({ authState });
 home.setScreen('home');
 
 // supabase-js trusts the session it restores from localStorage without asking the
@@ -259,17 +237,6 @@ controls.addEventListener('lock', () => {
   if (runState === 'running') return;
 
   const { routine, difficulty, duration } = settings.get();
-  const signedIn = authState.status === 'signed_in';
-
-  // A signed-out player spends one free run here — once per RUN, not per lock,
-  // so pausing no longer costs them a second one. Consumed in this handler
-  // rather than in onStart because requestLock() swallows a denied lock, and
-  // consuming earlier would burn a run on a lock that never happened. It
-  // persists nothing regardless: insertSession() has no subject to attach to.
-  if (signedIn === false) {
-    consumeFreeSession();
-    home.renderAccount({ authState, freeSessionsRemaining: freeSessionsRemaining() });
-  }
 
   runState = 'running';
   home.setScreen('playing');

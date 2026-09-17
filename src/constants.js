@@ -68,11 +68,6 @@ export const TRACK_WINDOW_MS = 1000;
 export const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 export const SAMPLING_VERSION = 3;
 
-// Data collection requires a real account. A visitor may play this many
-// sessions before the signup wall; those sessions persist nothing (no auth
-// session means no DB writes at all), so no anonymous rows ever reach the table.
-export const FREE_SESSION_LIMIT = 2;
-
 // Fixed-duration sessions. The player picks one of these on the home screen and
 // it is stamped on the session row as planned_duration_ms — INTENT recorded at
 // start, because the client can only write `sessions` at insert time (there is
