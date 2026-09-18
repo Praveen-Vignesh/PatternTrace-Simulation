@@ -1,0 +1,620 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aimprint — Direction A: Calibration</title>
+  <!--
+    DESIGN PROTOTYPE. Not a build input, never ships.
+    Open via `npm run dev` at /design/landing-a-calibration.html
+
+    Organising idea: the page is a measuring instrument, and the first thing it
+    measures is you. The hero records the visitor's own cursor and reports back
+    what it captured — proving the thesis with their hand instead of claiming it.
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400;62..125,500;62..125,600&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet" />
+
+  <style>
+    :root {
+      /* Cool graphite ground — carries temperature so it does not read as
+         generic dark mode. Trace is warm bone: the ink is the content. */
+      --ground: #20242b;
+      --ground-deep: #1a1d23;
+      --surface: #262b33;
+      --line: #343a44;
+      --line-soft: #2c313a;
+
+      --ink: #e8e2d4;
+      --ink-dim: #9aa0aa;
+      --ink-faint: #6b727d;
+
+      /* Deliberately scarce. Appears on target dots and nothing else. */
+      --target: #ff4438;
+
+      --font: "Archivo", system-ui, sans-serif;
+      --mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--ground);
+      color: var(--ink);
+      font-family: var(--font);
+      font-size: 16px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; }
+
+    /* ---------- hero ---------- */
+
+    .hero {
+      position: relative;
+      min-height: 100svh;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 260px;
+      align-items: center;
+      gap: 48px;
+      padding: 64px clamp(24px, 5vw, 80px);
+      overflow: hidden;
+    }
+
+    #trace {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      z-index: 0;
+    }
+
+    .hero > * { position: relative; z-index: 1; }
+
+    .hero-copy { max-width: 19ch; }
+
+    .wordmark {
+      font-variation-settings: "wdth" 78, "wght" 600;
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      color: var(--ink-dim);
+      margin-bottom: clamp(32px, 8vh, 72px);
+    }
+
+    h1 {
+      font-variation-settings: "wdth" 70, "wght" 600;
+      font-size: clamp(56px, 11vw, 148px);
+      line-height: 0.84;
+      letter-spacing: -0.02em;
+      margin-bottom: 28px;
+    }
+
+    .lede {
+      font-size: clamp(16px, 1.6vw, 19px);
+      color: var(--ink-dim);
+      max-width: 34ch;
+      margin-bottom: 36px;
+    }
+
+    .verdict {
+      min-height: 3.2em;
+      font-size: 15px;
+      color: var(--ink-faint);
+      max-width: 38ch;
+      border-left: 2px solid var(--line);
+      padding-left: 16px;
+      transition: color 600ms ease, border-color 600ms ease;
+    }
+
+    .verdict.resolved {
+      color: var(--ink);
+      border-left-color: var(--target);
+    }
+
+    /* ---------- instrument readout strip ---------- */
+
+    .readout {
+      align-self: stretch;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 2px;
+      border-left: 1px solid var(--line-soft);
+      padding-left: 24px;
+    }
+
+    .readout-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .readout-row:last-child { border-bottom: 0; }
+
+    .readout-key {
+      font-size: 12px;
+      color: var(--ink-faint);
+      letter-spacing: 0.01em;
+    }
+
+    .readout-val {
+      font-family: var(--mono);
+      font-size: 15px;
+      font-variant-numeric: tabular-nums;
+      color: var(--ink);
+    }
+
+    .readout-val .unit {
+      font-size: 11px;
+      color: var(--ink-faint);
+      margin-left: 3px;
+    }
+
+    /* ---------- body ---------- */
+
+    main {
+      border-top: 1px solid var(--line);
+      background: var(--ground-deep);
+      padding: clamp(64px, 10vh, 120px) clamp(24px, 5vw, 80px);
+    }
+
+    .band {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: clamp(40px, 6vw, 88px);
+      align-items: start;
+    }
+
+    h2 {
+      font-variation-settings: "wdth" 76, "wght" 600;
+      font-size: clamp(28px, 3.6vw, 42px);
+      line-height: 1.02;
+      letter-spacing: -0.01em;
+      margin-bottom: 20px;
+      max-width: 15ch;
+    }
+
+    p + p { margin-top: 14px; }
+
+    .body-text { color: var(--ink-dim); max-width: 46ch; }
+
+    .body-text strong { color: var(--ink); font-weight: 500; }
+
+    /* Routine list: real content, so it earns its structure. Not cards. */
+    .routines {
+      margin-top: 56px;
+      border-top: 1px solid var(--line-soft);
+    }
+
+    .routine {
+      display: grid;
+      grid-template-columns: 24px minmax(0, 190px) minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: center;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--target);
+      justify-self: center;
+      opacity: 0.85;
+    }
+
+    .routine-name { font-weight: 500; }
+    .routine-desc { color: var(--ink-faint); font-size: 14px; }
+
+    .routine-meta {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--ink-faint);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---------- auth ---------- */
+
+    .join {
+      margin-top: clamp(64px, 10vh, 120px);
+      max-width: 1100px;
+      margin-inline: auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
+      gap: clamp(40px, 6vw, 88px);
+      align-items: start;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      padding: 28px;
+    }
+
+    .btn {
+      display: block;
+      width: 100%;
+      font: inherit;
+      font-size: 15px;
+      font-weight: 500;
+      padding: 14px 16px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      text-align: center;
+      transition: background 140ms ease, border-color 140ms ease;
+    }
+
+    .btn-google {
+      background: var(--ink);
+      color: var(--ground);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .btn-google:hover { background: #fff; }
+
+    .btn-secondary {
+      background: transparent;
+      color: var(--ink);
+      border-color: var(--line);
+      margin-top: 10px;
+    }
+
+    .btn-secondary:hover { border-color: var(--ink-faint); }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin: 22px 0 18px;
+      color: var(--ink-faint);
+      font-size: 13px;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--line);
+    }
+
+    label { display: block; font-size: 13px; color: var(--ink-dim); margin-bottom: 6px; }
+
+    input[type="email"],
+    input[type="password"] {
+      width: 100%;
+      font: inherit;
+      font-size: 15px;
+      padding: 12px 13px;
+      background: var(--ground-deep);
+      color: var(--ink);
+      border: 1px solid var(--line);
+      margin-bottom: 14px;
+    }
+
+    input:focus-visible {
+      outline: none;
+      border-color: var(--ink-dim);
+    }
+
+    /* Consent sits inside the card as an ordinary field, not a separate gate. */
+    .consent {
+      display: flex;
+      gap: 11px;
+      align-items: flex-start;
+      margin: 4px 0 18px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--ink-dim);
+      cursor: pointer;
+    }
+
+    .consent input { margin-top: 3px; flex-shrink: 0; accent-color: var(--target); }
+    .consent a { color: var(--ink); text-decoration-color: var(--ink-faint); }
+
+    .fine {
+      margin-top: 16px;
+      font-size: 12.5px;
+      color: var(--ink-faint);
+      line-height: 1.6;
+    }
+
+    button:focus-visible,
+    a:focus-visible {
+      outline: 2px solid var(--target);
+      outline-offset: 2px;
+    }
+
+    footer {
+      border-top: 1px solid var(--line-soft);
+      padding: 28px clamp(24px, 5vw, 80px);
+      color: var(--ink-faint);
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 900px) {
+      .hero { grid-template-columns: 1fr; gap: 32px; }
+      .readout { border-left: 0; border-top: 1px solid var(--line-soft); padding-left: 0; padding-top: 16px; }
+      .band, .join { grid-template-columns: 1fr; }
+      .routine { grid-template-columns: 18px 1fr; }
+      .routine-desc, .routine-meta { display: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+
+<body>
+  <section class="hero">
+    <canvas id="trace" aria-hidden="true"></canvas>
+
+    <div class="hero-copy">
+      <div class="wordmark">Aimprint</div>
+      <h1>Your aim has a signature.</h1>
+      <p class="lede">A browser aim trainer that studies whether the way you move a mouse is
+        as individual as handwriting.</p>
+      <p class="verdict" id="verdict">Move your cursor anywhere on this page.</p>
+    </div>
+
+    <div class="readout" aria-live="off">
+      <div class="readout-row">
+        <span class="readout-key">Samples</span>
+        <span class="readout-val" id="m-samples">0</span>
+      </div>
+      <div class="readout-row">
+        <span class="readout-key">Path length</span>
+        <span class="readout-val"><span id="m-path">0</span><span class="unit">px</span></span>
+      </div>
+      <div class="readout-row">
+        <span class="readout-key">Peak speed</span>
+        <span class="readout-val"><span id="m-peak">0</span><span class="unit">px/s</span></span>
+      </div>
+      <div class="readout-row">
+        <span class="readout-key">Direction changes</span>
+        <span class="readout-val" id="m-turns">0</span>
+      </div>
+      <div class="readout-row">
+        <span class="readout-key">Sample rate</span>
+        <span class="readout-val"><span id="m-rate">0</span><span class="unit">Hz</span></span>
+      </div>
+    </div>
+  </section>
+
+  <main>
+    <div class="band">
+      <div>
+        <h2>Two questions, one instrument.</h2>
+      </div>
+      <div class="body-text">
+        <p><strong>Can a machine tell a person from a script?</strong> Aim bots move in ways
+          humans do not — no overshoot, no correction, no tremor. We are building a classifier
+          that reads the difference.</p>
+        <p><strong>And can it tell one person from another?</strong> That is the harder
+          question, and the reason this is a research project rather than a product. Every
+          session you play is a data point in it.</p>
+        <p>Nothing here is a demo. The trainer is real, the drills are real, and the telemetry
+          it records is the study.</p>
+      </div>
+    </div>
+
+    <div class="routines">
+      <div class="routine">
+        <span class="dot"></span>
+        <span class="routine-name">Precision Flick</span>
+        <span class="routine-desc">One target. Flick, click, repeat.</span>
+        <span class="routine-meta">static</span>
+      </div>
+      <div class="routine">
+        <span class="dot"></span>
+        <span class="routine-name">Static Flicking</span>
+        <span class="routine-desc">Three to four targets held on screen.</span>
+        <span class="routine-meta">static</span>
+      </div>
+      <div class="routine">
+        <span class="dot"></span>
+        <span class="routine-name">Dynamic Reflex</span>
+        <span class="routine-desc">One target at a time. Hit it before it vanishes.</span>
+        <span class="routine-meta">400–1500 ms</span>
+      </div>
+      <div class="routine">
+        <span class="dot"></span>
+        <span class="routine-name">Reactive Strafing</span>
+        <span class="routine-desc">Track a target that changes direction without warning.</span>
+        <span class="routine-meta">tracking</span>
+      </div>
+      <div class="routine">
+        <span class="dot"></span>
+        <span class="routine-name">Target Switching</span>
+        <span class="routine-desc">Several moving targets. Destroy one, acquire the next.</span>
+        <span class="routine-meta">2–5 targets</span>
+      </div>
+    </div>
+
+    <div class="join">
+      <div>
+        <h2>Play, and be part of the measurement.</h2>
+        <p class="body-text">Free, no download, runs in this browser. Sessions are 5, 10 or 15
+          minutes. What matters most to the study is coming back more than once — a single
+          session tells us almost nothing.</p>
+      </div>
+
+      <div class="card">
+        <button class="btn btn-google">
+          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="#4285F4" d="M23 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.2a5.3 5.3 0 0 1-2.3 3.5v2.9h3.7c2.2-2 3.4-5 3.4-8.6z"/>
+            <path fill="#34A853" d="M12 24c3.1 0 5.7-1 7.6-2.8l-3.7-2.9c-1 .7-2.3 1.1-3.9 1.1-3 0-5.5-2-6.4-4.7H1.8v3C3.7 21.4 7.6 24 12 24z"/>
+            <path fill="#FBBC05" d="M5.6 14.7a7.2 7.2 0 0 1 0-4.6v-3H1.8a12 12 0 0 0 0 10.6l3.8-3z"/>
+            <path fill="#EA4335" d="M12 4.8c1.7 0 3.2.6 4.4 1.7l3.2-3.2C17.7 1.5 15.1.4 12 .4 7.6.4 3.7 3 1.8 6.8l3.8 3c.9-2.8 3.4-4.8 6.4-4.8z"/>
+          </svg>
+          Continue with Google
+        </button>
+
+        <div class="divider">or use an email address</div>
+
+        <label for="a-email">Email</label>
+        <input id="a-email" type="email" placeholder="you@example.com" autocomplete="email" />
+
+        <label for="a-pass">Password</label>
+        <input id="a-pass" type="password" placeholder="At least 6 characters"
+          autocomplete="new-password" />
+
+        <label class="consent">
+          <input type="checkbox" />
+          <span>I agree that my mouse movement during training is recorded and used for this
+            research. <a href="/privacy.html">What gets recorded</a>.</span>
+        </label>
+
+        <button class="btn btn-secondary">Create account</button>
+
+        <p class="fine">Already have an account? Sign in with the same button. We send one
+          confirmation email so we can invite you back for a second session — that is the whole
+          reason we ask for a real address.</p>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <span>Aimprint — an independent research project</span>
+    <a href="/privacy.html">Privacy &amp; what gets recorded</a>
+  </footer>
+
+  <script>
+    // The hero measures the visitor. Velocity maps to stroke weight, so a fast
+    // flick draws thin and the slow corrective settle draws thick — which is
+    // exactly the shape the study cares about, shown rather than described.
+    (function () {
+      const canvas = document.getElementById('trace');
+      const ctx = canvas.getContext('2d');
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      const el = {
+        samples: document.getElementById('m-samples'),
+        path: document.getElementById('m-path'),
+        peak: document.getElementById('m-peak'),
+        turns: document.getElementById('m-turns'),
+        rate: document.getElementById('m-rate'),
+        verdict: document.getElementById('verdict')
+      };
+
+      let dpr = 1;
+      function size() {
+        dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = canvas.clientWidth * dpr;
+        canvas.height = canvas.clientHeight * dpr;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      size();
+      window.addEventListener('resize', size);
+
+      const pts = [];
+      const MAX = 320;
+      let samples = 0, pathLen = 0, peak = 0, turns = 0;
+      let lastAngle = null, firstT = 0, resolved = false;
+
+      window.addEventListener('pointermove', (e) => {
+        const now = performance.now();
+        if (firstT === 0) firstT = now;
+        const p = { x: e.clientX, y: e.clientY, t: now, v: 0 };
+        const prev = pts[pts.length - 1];
+
+        if (prev) {
+          const dx = p.x - prev.x, dy = p.y - prev.y;
+          const d = Math.hypot(dx, dy);
+          const dt = Math.max(p.t - prev.t, 1);
+          p.v = (d / dt) * 1000;
+          pathLen += d;
+          if (p.v > peak) peak = p.v;
+
+          if (d > 3) {
+            const a = Math.atan2(dy, dx);
+            if (lastAngle !== null) {
+              let diff = Math.abs(a - lastAngle);
+              if (diff > Math.PI) diff = 2 * Math.PI - diff;
+              if (diff > 1.0) turns++;
+            }
+            lastAngle = a;
+          }
+        }
+
+        pts.push(p);
+        if (pts.length > MAX) pts.shift();
+        samples++;
+
+        if (!resolved && samples > 240) {
+          resolved = true;
+          el.verdict.textContent =
+            'That is ' + samples + ' samples of you. Enough, in aggregate, to start telling ' +
+            'your movement from someone else’s — which is exactly what this project is testing.';
+          el.verdict.classList.add('resolved');
+        }
+      }, { passive: true });
+
+      const fmt = (n) => Math.round(n).toLocaleString('en-US');
+
+      function draw() {
+        ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+
+        for (let i = 1; i < pts.length; i++) {
+          const a = pts[i - 1], b = pts[i];
+          const age = i / pts.length;
+          // Slow movement pools into a thicker stroke; fast flicks run thin.
+          const w = Math.max(0.6, 5.5 - Math.min(b.v, 2600) / 520);
+          ctx.strokeStyle = 'rgba(232, 226, 212, ' + (age * 0.5).toFixed(3) + ')';
+          ctx.lineWidth = w;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+
+        const head = pts[pts.length - 1];
+        if (head) {
+          ctx.fillStyle = '#ff4438';
+          ctx.beginPath();
+          ctx.arc(head.x, head.y, 3.2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        el.samples.textContent = fmt(samples);
+        el.path.textContent = fmt(pathLen);
+        el.peak.textContent = fmt(peak);
+        el.turns.textContent = fmt(turns);
+        const secs = firstT ? (performance.now() - firstT) / 1000 : 0;
+        el.rate.textContent = secs > 0.4 ? fmt(samples / secs) : '0';
+
+        requestAnimationFrame(draw);
+      }
+
+      if (reduced) {
+        el.verdict.textContent =
+          'This page would normally draw your cursor path here. Motion is reduced, so the ' +
+          'numbers on the right report it instead.';
+      }
+      requestAnimationFrame(draw);
+    })();
+  </script>
+</body>
+
+</html>
