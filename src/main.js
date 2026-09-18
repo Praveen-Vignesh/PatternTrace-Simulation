@@ -26,8 +26,24 @@ import {
   CAMERA_FOV,
   APP_VERSION,
   SAMPLING_VERSION,
-  MS_PER_MINUTE
+  MS_PER_MINUTE,
+  BACKGROUND_COLOR,
+  TARGET_COLOR
 } from './constants.js';
+
+// Two colours exist in both worlds: Three needs numbers, CSS needs strings, and
+// they must match or the panel background disagrees with the scene behind it.
+// Publishing constants.js into the token layer makes it the single source —
+// style.css carries the same literals only as a pre-JS fallback, so the running
+// app cannot drift even if those fall out of sync.
+function publishColorTokens() {
+  const hex = (value) => `#${value.toString(16).padStart(6, '0')}`;
+  const root = document.documentElement.style;
+  root.setProperty('--color-bg', hex(BACKGROUND_COLOR));
+  root.setProperty('--color-accent', hex(TARGET_COLOR));
+}
+
+publishColorTokens();
 
 const crosshair = document.getElementById('crosshair');
 

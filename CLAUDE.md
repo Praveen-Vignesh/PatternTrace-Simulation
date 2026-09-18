@@ -202,6 +202,25 @@ DOM.
 `constants.js` holds defaults and every tunable (FOV, spawn volume, flick timing). Numbers
 belong there or in `difficulty.js`, not inline.
 
+**`style.css` opens with a `:root` token layer, and nothing below it may use a raw
+colour.** Before it existed the palette was repeated by hand — `#ff5555` six times,
+`#333333` seven, `#8c8c8c` five — so a brand change was a find-and-replace that could
+silently miss one. Tokens cover surfaces, borders, text, accent, shot feedback, the font
+stack and a six-step spacing scale.
+
+**`main.js` publishes `BACKGROUND_COLOR` and `TARGET_COLOR` into that layer at boot**
+(`publishColorTokens()`), overwriting `--color-bg` and `--color-accent`. Those two colours
+exist in both worlds — Three needs numbers, CSS needs strings — and must agree or the panel
+background disagrees with the scene behind it. `constants.js` is therefore the single
+source; the literals in `:root` are only a pre-JS fallback. **Do not "simplify" this by
+deleting either side.**
+
+**Any rule giving an account-panel block its own `display` must pair with a `.x.hidden`
+override.** `.hidden` is a bare class, so a competing `display` out-cascades it on source
+order and the element becomes impossible to hide. `.screen.hidden` and `.account-row.hidden`
+both exist for exactly this reason — `.account-row` is the collapsed signed-in row, which
+needs `display: flex`.
+
 **The build is multi-page, not routed.** `vite.config.js` declares two entries —
 `index.html` (the game) and `privacy.html` (a static document with its own inline styles and
 **no JS at all**, verified: the built page references no bundle). There is still no router
@@ -656,11 +675,14 @@ no TODOs left behind, no `.env.local` in git.
 | Repository | **`PatternTrace-Simulation`** | Git remote only. Deliberately not renamed. |
 | Internal plumbing | **`aim-trainer*`** | Storage keys, IndexedDB, env vars, schema |
 
-The internal keys are **load-bearing and must not be renamed**:
-`'aim-trainer-outbox'` (`outbox.js`), `'aim-trainer.settings'` (`settings.js`),
-and `'aim-trainer.pending-google-consent'` (`main.js`). (`'aim-trainer.free-sessions-used'`
-was retired with the free-run trial on 2026-09-17 and no longer exists; any value still
-sitting in a returning visitor's localStorage is inert and is never read.)
+Two internal keys remain, and both are **load-bearing and must not be renamed**:
+`'aim-trainer-outbox'` (`outbox.js`) and `'aim-trainer.settings'` (`settings.js`).
+
+Two others were retired on 2026-09-17 and no longer exist anywhere in `src/`:
+`'aim-trainer.free-sessions-used'` (with the free-run trial) and
+`'aim-trainer.pending-google-consent'` (with the localStorage consent flag, replaced by
+the `profiles.consent_version` gate). Values left behind in a returning visitor's
+localStorage are inert and never read.
 Renaming the IndexedDB database **orphans undelivered telemetry already queued in users'
 browsers, unrecoverably**; renaming the settings key silently resets everyone's DPI/sens.
 A future session seeing `Aimprint` in the UI and `aim-trainer` in storage is looking at a

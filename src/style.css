@@ -1,3 +1,55 @@
+/* Design tokens. Every colour, font and spacing step in this file resolves to
+   one of these — no raw literals below this block. Before this existed the
+   palette was repeated by hand (#ff5555 six times, #333333 seven, #8c8c8c
+   five), so a brand change meant a find-and-replace that could silently miss.
+
+   --color-bg and --color-accent are overwritten at boot by main.js from
+   BACKGROUND_COLOR and TARGET_COLOR in constants.js, which Three also reads.
+   That makes constants.js the single source for the two values the 3D scene and
+   the DOM must agree on; the literals here are the pre-JS fallback and should be
+   kept in sync, but the running app cannot drift. */
+:root {
+  /* Surfaces, darkest to lightest */
+  --color-bg: #1a1a1a;
+  --color-surface: #161616;
+  --color-surface-raised: #1e1e1e;
+  --color-surface-sunken: #101010;
+  --color-scrim: rgba(10, 10, 10, 0.86);
+
+  /* Borders */
+  --color-border: #333333;
+  --color-border-faint: #3a3a3a;
+  --color-border-subtle: #2a2a2a;
+  --color-border-hover: #5a5a5a;
+
+  /* Text */
+  --color-text: #dcdcdc;
+  --color-text-bright: #ffffff;
+  --color-text-soft: #9a9a9a;
+  --color-text-muted: #8c8c8c;
+  --color-text-dim: #6f6f6f;
+
+  /* Accent */
+  --color-accent: #ff5555;
+  --color-accent-hover: #ff7070;
+  --color-accent-soft: #ff8080;
+  --color-accent-bg: #241a1a;
+  --color-accent-border: #6a3535;
+
+  /* Shot feedback */
+  --color-hit: #55ff88;
+  --color-miss: #888888;
+
+  --font-mono: Consolas, "Courier New", monospace;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 28px;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -9,9 +61,9 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #1a1a1a;
-  color: #dcdcdc;
-  font-family: Consolas, "Courier New", monospace;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-mono);
 }
 
 #scene {
@@ -36,7 +88,7 @@ body {
 #crosshair::after {
   content: "";
   position: absolute;
-  background: #ffffff;
+  background: var(--color-text-bright);
 }
 
 #crosshair::before {
@@ -57,20 +109,20 @@ body {
 
 #crosshair.hit::before,
 #crosshair.hit::after {
-  background: #55ff88;
+  background: var(--color-hit);
 }
 
 #crosshair.miss::before,
 #crosshair.miss::after {
-  background: #888888;
+  background: var(--color-miss);
 }
 
 /* HUD */
 
 #hud {
   position: fixed;
-  top: 16px;
-  left: 16px;
+  top: var(--space-4);
+  left: var(--space-4);
   pointer-events: none;
   font-size: 14px;
   line-height: 1.7;
@@ -84,19 +136,22 @@ body {
 
 .hud-label {
   width: 74px;
-  color: #8c8c8c;
+  color: var(--color-text-muted);
 }
 
 .hud-mode-row {
   margin-bottom: 6px;
-  color: #ff8080;
+  color: var(--color-accent-soft);
 }
 
 /* Utility */
 
 /* .hidden is a general-purpose toggle target (home.js also flips it on the
-   account-signed-in/-out panels, which are plain divs, not .screen elements)
-   — it must stand alone, not be scoped to .screen. */
+   account panel's three blocks, which are plain divs, not .screen elements)
+   — it must stand alone, not be scoped to .screen. Any rule that gives one of
+   those elements its own `display` MUST pair with a `.x.hidden` override, or it
+   out-cascades this and the element can never be hidden. See .screen.hidden and
+   .account-row.hidden below. */
 .hidden {
   display: none;
 }
@@ -108,9 +163,9 @@ body {
   inset: 0;
   display: flex;
   justify-content: center;
-  padding: 24px;
+  padding: var(--space-5);
   overflow-y: auto;
-  background: rgba(10, 10, 10, 0.86);
+  background: var(--color-scrim);
 }
 
 /* Higher specificity than the bare .hidden above, so this wins regardless of
@@ -128,9 +183,9 @@ body {
   width: 100%;
   max-width: 640px;
   margin: auto;
-  border: 1px solid #333333;
-  background: #161616;
-  padding: 28px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  padding: var(--space-6);
 }
 
 .panel.narrow {
@@ -139,7 +194,7 @@ body {
 }
 
 .panel-head {
-  margin-bottom: 24px;
+  margin-bottom: var(--space-5);
 }
 
 h1 {
@@ -152,27 +207,27 @@ h2 {
   font-size: 12px;
   letter-spacing: 2px;
   text-transform: uppercase;
-  color: #8c8c8c;
+  color: var(--color-text-muted);
   margin-bottom: 10px;
 }
 
 section {
-  margin-bottom: 24px;
+  margin-bottom: var(--space-5);
 }
 
 .muted {
-  color: #8c8c8c;
+  color: var(--color-text-muted);
 }
 
 .note {
-  margin-top: 12px;
+  margin-top: var(--space-3);
   font-size: 12px;
   line-height: 1.6;
-  color: #6f6f6f;
+  color: var(--color-text-dim);
 }
 
-code {
-  color: #b9b9b9;
+.note a {
+  color: var(--color-accent-soft);
 }
 
 /* Routine grid */
@@ -180,29 +235,29 @@ code {
 .mode-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .mode-tile {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px;
+  padding: var(--space-3);
   text-align: left;
   font: inherit;
-  color: #dcdcdc;
-  background: #1e1e1e;
-  border: 1px solid #333333;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
   cursor: pointer;
 }
 
 .mode-tile:hover:not(:disabled) {
-  border-color: #5a5a5a;
+  border-color: var(--color-border-hover);
 }
 
 .mode-tile.selected {
-  border-color: #ff5555;
-  background: #241a1a;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 .mode-tile:disabled {
@@ -217,7 +272,7 @@ code {
 .mode-blurb {
   font-size: 11px;
   line-height: 1.5;
-  color: #8c8c8c;
+  color: var(--color-text-muted);
 }
 
 .mode-tag {
@@ -225,21 +280,21 @@ code {
   font-size: 10px;
   letter-spacing: 1px;
   text-transform: uppercase;
-  color: #6f6f6f;
-  border: 1px solid #3a3a3a;
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border-faint);
   padding: 1px 6px;
 }
 
 .mode-tile.selected .mode-tag {
-  color: #ff8080;
-  border-color: #6a3535;
+  color: var(--color-accent-soft);
+  border-color: var(--color-accent-border);
 }
 
 /* Difficulty */
 
 .segmented {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .segment {
@@ -248,19 +303,19 @@ code {
   font: inherit;
   font-size: 13px;
   text-transform: capitalize;
-  color: #dcdcdc;
-  background: #1e1e1e;
-  border: 1px solid #333333;
+  color: var(--color-text);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
   cursor: pointer;
 }
 
 .segment:hover {
-  border-color: #5a5a5a;
+  border-color: var(--color-border-hover);
 }
 
 .segment.selected {
-  border-color: #ff5555;
-  background: #241a1a;
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
 }
 
 /* Settings fields */
@@ -269,24 +324,24 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   margin-bottom: 10px;
   font-size: 13px;
 }
 
 .field input {
   width: 120px;
-  padding: 8px 10px;
+  padding: var(--space-2) 10px;
   font: inherit;
   font-size: 13px;
-  color: #dcdcdc;
-  background: #101010;
-  border: 1px solid #333333;
+  color: var(--color-text);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
 }
 
 .field input:focus {
   outline: none;
-  border-color: #ff5555;
+  border-color: var(--color-accent);
 }
 
 /* The 120px above is sized for the numeric DPI/sens inputs. An email address
@@ -300,7 +355,7 @@ code {
 
 .readout {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   margin-top: 14px;
 }
 
@@ -308,17 +363,17 @@ code {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   padding: 10px;
   font-size: 12px;
-  background: #101010;
-  border: 1px solid #2a2a2a;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .readout strong {
   font-size: 18px;
   font-weight: normal;
-  color: #ffffff;
+  color: var(--color-text-bright);
 }
 
 /* Buttons */
@@ -327,7 +382,7 @@ button.primary,
 button.secondary {
   display: block;
   width: 100%;
-  padding: 12px;
+  padding: var(--space-3);
   font: inherit;
   font-size: 14px;
   letter-spacing: 2px;
@@ -336,24 +391,34 @@ button.secondary {
 }
 
 button.primary {
-  color: #1a1a1a;
-  background: #ff5555;
-  border: 1px solid #ff5555;
+  color: var(--color-bg);
+  background: var(--color-accent);
+  border: 1px solid var(--color-accent);
 }
 
 button.primary:hover {
-  background: #ff7070;
+  background: var(--color-accent-hover);
 }
 
 button.secondary {
-  margin-top: 8px;
-  color: #dcdcdc;
+  margin-top: var(--space-2);
+  color: var(--color-text);
   background: transparent;
-  border: 1px solid #333333;
+  border: 1px solid var(--color-border);
 }
 
 button.secondary:hover {
-  border-color: #5a5a5a;
+  border-color: var(--color-border-hover);
+}
+
+/* Keyboard focus stays visible on every control. The inputs above suppress the
+   default ring in favour of an accent border; buttons have no such affordance,
+   so without this a keyboard user cannot tell what is focused. */
+button:focus-visible,
+.mode-tile:focus-visible,
+.segment:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 .panel.narrow h2 {
@@ -367,11 +432,11 @@ button.secondary:disabled {
 }
 
 button.primary:disabled:hover {
-  background: #ff5555;
+  background: var(--color-accent);
 }
 
 button.secondary:disabled:hover {
-  border-color: #333333;
+  border-color: var(--color-border);
 }
 
 /* Account panel */
@@ -382,12 +447,12 @@ button.secondary:disabled:hover {
 
 .consent {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   align-items: flex-start;
-  margin: 12px 0;
+  margin: var(--space-3) 0;
   font-size: 12px;
   line-height: 1.5;
-  color: #9a9a9a;
+  color: var(--color-text-soft);
   cursor: pointer;
 }
 
@@ -396,10 +461,14 @@ button.secondary:disabled:hover {
   flex-shrink: 0;
 }
 
+.consent a {
+  color: var(--color-accent-soft);
+}
+
 .auth-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .auth-actions button.secondary {
@@ -407,9 +476,39 @@ button.secondary:disabled:hover {
 }
 
 .note.error {
-  color: #ff7070;
+  color: var(--color-accent-hover);
 }
 
-#account-signed-in .muted {
-  margin-bottom: 10px;
+/* Once signed in and consented the account panel has nothing left to ask for,
+   so it collapses to a single row and the routine grid becomes the first thing
+   the eye lands on. Paired with .account-row.hidden below — see the .hidden
+   comment for why that pairing is mandatory. */
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: 13px;
+}
+
+.account-row.hidden {
+  display: none;
+}
+
+.account-row .muted {
+  margin-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Overrides button.secondary's full-width block layout: in the collapsed row it
+   sits beside the email rather than under it. */
+.account-row button.secondary {
+  width: auto;
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 6px 10px;
+  font-size: 11px;
+  letter-spacing: 1px;
 }
