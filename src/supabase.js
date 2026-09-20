@@ -79,9 +79,24 @@ if (client !== null) {
   // 'loading' as soon as the persisted session is read from localStorage.
   client.auth.onAuthStateChange((_event, session) => {
     accessToken = session?.access_token ?? null;
-    subjectPromise = null;
 
     if (session?.user) {
+      // TOKEN_REFRESHED fires roughly hourly, and supabase-js also re-emits for
+      // the same account (INITIAL_SESSION then SIGNED_IN on a fresh load).
+      // Re-resolving on those would drop `consented` back to null mid-session,
+      // which applyStartGate() reads as "still checking" and uses to disable
+      // Start under a player who is already signed in and agreed. Only a real
+      // change of account re-resolves the profile.
+      const sameUser =
+        currentAuth.status === 'signed_in' && currentAuth.userId === session.user.id;
+
+      if (sameUser) {
+        currentAuth = { ...currentAuth, email: session.user.email ?? currentAuth.email };
+        notifyAuth();
+        return;
+      }
+
+      subjectPromise = null;
       currentAuth = {
         status: 'signed_in',
         email: session.user.email ?? null,
@@ -91,10 +106,21 @@ if (client !== null) {
       notifyAuth();
       // Consent needs a round trip, so it lands in a second notification. The UI
       // treats null as "still checking" and keeps Start disabled meanwhile.
-      refreshConsent();
+      //
+      // Deferred out of this callback ON PURPOSE, and it must stay deferred.
+      // supabase-js invokes auth state callbacks while holding its internal auth
+      // lock, and refreshConsent() calls back into client.auth.getSession().
+      // Calling a Supabase auth method from inside this callback contends with
+      // that lock, so the profile read runs against a session that is not ready
+      // and comes back empty. `consented` then publishes as false for an account
+      // that HAS agreed — which is the consent prompt reappearing on every sign
+      // in, with the correct value sitting in the database the whole time.
+      // setTimeout lets the lock release first.
+      setTimeout(refreshConsent, 0);
       return;
     }
 
+    subjectPromise = null;
     currentAuth = { status: 'signed_out', email: null, userId: null, consented: null };
     notifyAuth();
   });
@@ -126,6 +152,7 @@ function resolveSubjectFor(user) {
   // The trigger creates the profile in the same transaction as the auth user,
   // so it is normally present immediately; retry briefly against any lag.
   return (async () => {
+    let lastError = null;
     for (let attempt = 0; attempt < 5; attempt++) {
       // consent_version rides along on the query that was already being made —
       // the `profiles select own` policy covers both columns.
@@ -142,10 +169,21 @@ function resolveSubjectFor(user) {
           consentVersion: data.consent_version ?? null
         };
       }
+      lastError = error;
       await sleep(200);
     }
 
-    console.warn('Supabase profile row not found for the signed-in user; telemetry dropped.');
+    // The specific failure is what distinguishes the two causes, and swallowing
+    // it is why this was invisible: a 401/PGRST301 means the token was not
+    // attached yet (transient, and the caller must not cache the null), while a
+    // clean empty result means the on_auth_user_created trigger genuinely never
+    // made a profile row for this account (permanent, needs a server-side fix).
+    console.warn(
+      'Supabase profile row not resolved for the signed-in user; telemetry dropped.',
+      lastError
+        ? `Last error: ${lastError.code ?? 'no code'} — ${lastError.message}`
+        : 'No error, but no row returned — this account has no profiles row.'
+    );
     return null;
   })();
 }
@@ -156,12 +194,24 @@ function resolveSubjectFor(user) {
 function ensureAuth() {
   if (client === null) return Promise.resolve(null);
   if (subjectPromise === null) {
-    subjectPromise = (async () => {
+    const pending = (async () => {
       const { data } = await client.auth.getSession();
       const user = data.session?.user ?? null;
       if (user === null) return null;
       return resolveSubjectFor(user);
     })();
+
+    subjectPromise = pending;
+
+    // A null result is a FAILURE, not an answer, so it is deliberately not
+    // memoised. This read can fail transiently — the session may still be
+    // restoring, or the access token may not be attached yet — and caching that
+    // null poisons every later call for the rest of the page's life: consent,
+    // session inserts and segment writes all keep resolving null with no retry,
+    // until an auth event happens to clear it. Only a real resolution sticks.
+    pending.then((auth) => {
+      if (auth === null && subjectPromise === pending) subjectPromise = null;
+    });
   }
   return subjectPromise;
 }
@@ -172,6 +222,22 @@ export async function signUp({ email, password }) {
   if (client === null) return { error: 'Supabase is not configured.' };
   const { data, error } = await client.auth.signUp({ email, password });
   if (error) return { error: error.message };
+
+  // With "Confirm email" ON, Supabase does NOT reject a signup for an address
+  // that already has an account — it returns a decoy success, so the endpoint
+  // cannot be used to enumerate registered emails. The tell is an empty
+  // `identities` array on the returned user; a genuine new signup always has
+  // exactly one. Without this check the panel tells a returning player "Account
+  // created, check your email" and no email ever arrives, because none was sent.
+  //
+  // Reporting it does make enumeration possible against this project. That is a
+  // deliberate trade-off: the cohort is ~50 recruited participants, and silently
+  // swallowing a returning player's signup costs a session, which is the scarce
+  // resource here.
+  if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+    return { error: 'That email already has an account — sign in instead.' };
+  }
+
   return { needsConfirmation: data.session === null };
 }
 
@@ -241,18 +307,34 @@ export async function recordConsent(version = CONSENT_VERSION) {
   const auth = await ensureAuth();
   if (auth === null) return { error: 'No profile is linked to this account.' };
 
-  const { error } = await client
+  // The .select() is what makes this verifiable, and it is not optional.
+  // PostgREST answers an UPDATE that matched NO rows with a plain 200 and no
+  // error, so without asking for the row back an RLS refusal, a missing profile
+  // and a real write are indistinguishable. The client would report success,
+  // flip `consented` locally, let the player run — and then prompt for consent
+  // again on the next sign-in, because the column was never written. Consent
+  // that silently fails to persist is the one failure this project cannot ship.
+  const { data, error } = await client
     .from('profiles')
     .update({ consent_version: version, consented_at: new Date().toISOString() })
-    .eq('user_id', auth.userId);
+    .eq('user_id', auth.userId)
+    .select('consent_version');
 
   if (error) {
     console.warn('Consent update failed:', error.message);
     return { error: error.message };
   }
 
+  if (Array.isArray(data) === false || data.length === 0) {
+    console.warn('Consent update matched no profile row for user', auth.userId);
+    return { error: 'Your agreement could not be saved. Sign out, sign in again, and retry.' };
+  }
+
   subjectPromise = null;
-  currentAuth = { ...currentAuth, consented: true };
+  // Read back from what the database stored rather than assumed from intent: if
+  // the write ever lands while storing something else, the gate must follow the
+  // stored value, exactly as refreshConsent() does.
+  currentAuth = { ...currentAuth, consented: data[0].consent_version === CONSENT_VERSION };
   notifyAuth();
   return {};
 }
