@@ -102,7 +102,21 @@
       body.crosshair-on label { cursor: none; }
 
       body.crosshair-on input { cursor: auto; }
+
+      /* While the modal is open the native cursor comes back. showModal()
+         renders the dialog in the top layer, which paints above every z-index
+         in the normal document, so the crosshair element is hidden behind it
+         and the visitor is left with no pointer at all. Two-class specificity
+         beats the single-class rules above. */
+      body.crosshair-on.modal-open,
+      body.crosshair-on.modal-open button,
+      body.crosshair-on.modal-open a,
+      body.crosshair-on.modal-open label { cursor: auto; }
     }
+
+    /* Hidden rather than left tracking, or the page would show two pointers:
+       the real one over the dialog and the crosshair sliding around behind it. */
+    body.modal-open #crosshair { display: none; }
 
     #crosshair {
       position: fixed;
@@ -395,6 +409,11 @@
        should not sit in the scroll as a form. */
 
     #auth-modal {
+      /* `margin: auto` is what centres a modal <dialog>, and it comes from the
+         UA stylesheet — which the `* { margin: 0 }` reset at the top of this
+         file overrides, because author styles beat UA styles whatever the
+         specificity. Without this line the dialog pins to the top-left. */
+      margin: auto;
       padding: 0;
       width: min(408px, calc(100vw - 28px));
       max-height: calc(100dvh - 28px);

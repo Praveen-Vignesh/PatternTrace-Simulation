@@ -51,6 +51,16 @@ if (root !== null) {
   const modal = document.getElementById('auth-modal');
   let ready = false;
 
+  // `modal-open` on <body> restores the native cursor and hides the crosshair
+  // element for as long as the dialog is up — see the cursor rules in the page.
+  // Driven from the dialog's own `close` event as well as the buttons, so Esc
+  // and a backdrop click put the crosshair back too.
+  function setModalOpen(open) {
+    document.body.classList.toggle('modal-open', open);
+  }
+
+  modal.addEventListener('close', () => setModalOpen(false));
+
   // "Start training" means one thing and does the right one of two: an account
   // that can already play goes straight to the game, everyone else gets the
   // form. The button never changes its name, because the promise is the same.
@@ -59,7 +69,10 @@ if (root !== null) {
       window.location.href = PLAY_URL;
       return;
     }
-    if (modal.open === false) modal.showModal();
+    if (modal.open === false) {
+      modal.showModal();
+      setModalOpen(true);
+    }
   }
 
   for (const trigger of document.querySelectorAll('[data-modal="open"]')) {
