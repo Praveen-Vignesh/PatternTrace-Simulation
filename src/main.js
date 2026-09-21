@@ -11,11 +11,7 @@ import { createHome } from './ui/home.js';
 import {
   getAuthState,
   onAuthChange,
-  signIn,
-  signUp,
   signOut,
-  signInWithGoogle,
-  recordConsent,
   validateSession,
   initTelemetryOutbox,
   flushTelemetry,
@@ -109,25 +105,12 @@ function gatedLock() {
 
 const home = createHome({
   settings,
+  // Sign-in, sign-up and consent are not reachable from this page — they live on
+  // the landing page, where the form is. All this screen can do is let someone
+  // out of the account they arrived with.
   auth: {
-    // None of the sign-in paths stamp consent. It is collected once, explicitly,
-    // from the consent block that appears after a session exists — which is also
-    // the first moment it can be written to profiles. Stamping it on sign-in (as
-    // this did) recorded agreement for a path where nothing was ever ticked.
-    onSignIn({ email, password }) {
-      return signIn({ email, password });
-    },
-    onSignUp({ email, password }) {
-      return signUp({ email, password });
-    },
     onSignOut() {
       return signOut();
-    },
-    onGoogleSignIn() {
-      return signInWithGoogle();
-    },
-    onConsent() {
-      return recordConsent();
     }
   },
   onStart: gatedLock,

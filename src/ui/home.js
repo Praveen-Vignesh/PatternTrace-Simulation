@@ -4,13 +4,16 @@ import { createSensitivity } from '../sensitivity.js';
 import { formatClock } from '../hud.js';
 import { SESSION_DURATIONS_MIN, SESSION_COMPLETE_FRACTION } from '../constants.js';
 
-// Owns the home, pause and results screens: renders the routine catalogue,
-// sensitivity settings and the account panel, writes setting changes straight
-// back into the store, and gates Start on the account state. `auth` supplies the
-// async account actions (onSignIn/onSignUp/onGoogleSignIn/onConsent/onSignOut),
-// each resolving to a result object ({ error } / { needsConfirmation } / {}) that
-// this module displays. `onEndRun` finishes a run for good; `onMenu` only changes
-// screen.
+// Owns the home, pause and results screens: renders the routine catalogue and
+// sensitivity settings, writes setting changes straight back into the store, and
+// gates Start on the account state.
+//
+// It does NOT own the sign-in form. That lives in `ui/auth-panel.js` on the
+// landing pages, because this page is past the gate — by the time anyone is here
+// they have an account. All this needs is the identity row, a notice pointing
+// home when the account is not ready, and the Start gate. `auth` therefore
+// supplies only `onSignOut`. `onEndRun` finishes a run for good; `onMenu` only
+// changes screen.
 export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu }) {
   const homeScreen = document.getElementById('home');
   const pauseScreen = document.getElementById('pause');
@@ -24,23 +27,11 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   const edpiReadout = document.getElementById('edpi-readout');
   const cm360Readout = document.getElementById('cm360-readout');
 
-  // Account panel. Three mutually exclusive blocks: signed out, signed in but
-  // not yet consented, and fully ready.
-  const signedOutBlock = document.getElementById('account-signed-out');
-  const consentBlock = document.getElementById('account-consent');
+  // Identity only: who is signed in, a way out, and a notice when the account
+  // is not in a state that can start a run.
   const signedInBlock = document.getElementById('account-signed-in');
-  const emailInput = document.getElementById('email-input');
-  const passwordInput = document.getElementById('password-input');
-  const consentCheckbox = document.getElementById('consent-checkbox');
-  const consentButton = document.getElementById('consent-button');
-  const consentMessage = document.getElementById('consent-message');
-  const consentEmail = document.getElementById('consent-email');
-  const consentSignoutButton = document.getElementById('consent-signout-button');
-  const signinButton = document.getElementById('signin-button');
-  const signupButton = document.getElementById('signup-button');
-  const googleButton = document.getElementById('google-signin-button');
+  const accountNotice = document.getElementById('account-notice');
   const signoutButton = document.getElementById('signout-button');
-  const authMessage = document.getElementById('auth-message');
   const accountEmail = document.getElementById('account-email');
   const startButton = document.getElementById('start-button');
   const startNote = document.getElementById('start-note');
@@ -119,94 +110,7 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
   dpiInput.addEventListener('change', commit);
   sensInput.addEventListener('change', commit);
 
-  // --- account actions -----------------------------------------------------
-
-  function setAuthMessage(text, isError = false) {
-    authMessage.textContent = text ?? '';
-    authMessage.classList.toggle('error', isError === true && Boolean(text));
-  }
-
-  function setAuthBusy(busy) {
-    signinButton.disabled = busy;
-    signupButton.disabled = busy;
-    googleButton.disabled = busy;
-  }
-
-  async function handleSignIn() {
-    const email = emailInput.value.trim();
-    const password = passwordInput.value;
-    if (email === '' || password === '') {
-      setAuthMessage('Enter your email and password.', true);
-      return;
-    }
-
-    setAuthBusy(true);
-    setAuthMessage('Signing in…');
-    const result = await auth.onSignIn({ email, password });
-    setAuthBusy(false);
-
-    if (result && result.error) setAuthMessage(result.error, true);
-    else setAuthMessage('');
-  }
-
-  async function handleSignUp() {
-    const email = emailInput.value.trim();
-    const password = passwordInput.value;
-    if (email === '' || password === '') {
-      setAuthMessage('Enter an email and password to create an account.', true);
-      return;
-    }
-
-    setAuthBusy(true);
-    setAuthMessage('Creating your account…');
-    const result = await auth.onSignUp({ email, password });
-    setAuthBusy(false);
-
-    if (result && result.error) setAuthMessage(result.error, true);
-    else if (result && result.needsConfirmation) {
-      setAuthMessage('Account created. Check your email to confirm, then sign in.');
-    } else setAuthMessage('');
-  }
-
-  async function handleGoogleSignIn() {
-    setAuthBusy(true);
-    setAuthMessage('Redirecting to Google…');
-    const result = await auth.onGoogleSignIn();
-    setAuthBusy(false);
-
-    if (result && result.error) setAuthMessage(result.error, true);
-  }
-
-  // Consent is collected here, after a session exists, because this is the first
-  // point at which it can actually be written to profiles. Asking before signup
-  // would only have produced a promise nothing recorded.
-  async function handleConsent() {
-    if (consentCheckbox.checked === false) {
-      consentMessage.textContent = 'Tick the box to agree before continuing.';
-      consentMessage.classList.add('error');
-      return;
-    }
-
-    consentButton.disabled = true;
-    consentMessage.classList.remove('error');
-    consentMessage.textContent = 'Saving…';
-    const result = await auth.onConsent();
-    consentButton.disabled = false;
-
-    if (result && result.error) {
-      consentMessage.textContent = result.error;
-      consentMessage.classList.add('error');
-      return;
-    }
-    consentMessage.textContent = '';
-  }
-
-  signinButton.addEventListener('click', handleSignIn);
-  signupButton.addEventListener('click', handleSignUp);
-  googleButton.addEventListener('click', handleGoogleSignIn);
-  consentButton.addEventListener('click', handleConsent);
   signoutButton.addEventListener('click', () => auth.onSignOut());
-  consentSignoutButton.addEventListener('click', () => auth.onSignOut());
 
   // Start is gated on being signed in AND consented. This mirrors canPlay() in
   // main.js, which guards the click path; both must agree, so neither grows a
@@ -223,9 +127,9 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
     if (loading || checkingConsent) {
       startNote.textContent = 'Checking your session…';
     } else if (signedIn === false) {
-      startNote.textContent = 'Create an account to start training.';
+      startNote.textContent = 'Sign in on the home page to start training.';
     } else if (consented === false) {
-      startNote.textContent = 'Agree to telemetry collection to start training.';
+      startNote.textContent = 'Agree to telemetry collection on the home page to start.';
     } else {
       startNote.textContent = 'Esc pauses the clock. Left click to shoot.';
     }
@@ -264,22 +168,23 @@ export function createHome({ settings, auth, onStart, onResume, onEndRun, onMenu
       lastAuthState = authState;
 
       const signedIn = authState.status === 'signed_in';
-      // While consent is still being read, show the ready block rather than
-      // flashing the consent prompt at someone who has already agreed; Start
-      // stays disabled throughout, so nothing is reachable early either way.
       const needsConsent = signedIn && authState.consented === false;
-      const ready = signedIn && authState.consented !== false;
 
-      signedOutBlock.classList.toggle('hidden', signedIn);
-      consentBlock.classList.toggle('hidden', needsConsent === false);
-      signedInBlock.classList.toggle('hidden', ready === false);
+      signedInBlock.classList.toggle('hidden', signedIn === false);
 
-      if (signedIn) {
-        const label = authState.email ?? 'your account';
-        accountEmail.textContent = label;
-        consentEmail.textContent = label;
-        setAuthMessage('');
+      if (signedIn) accountEmail.textContent = authState.email ?? 'your account';
+
+      // Every route out of a not-ready state lives on the landing page, so the
+      // notice links there rather than offering controls this page does not have.
+      let notice = '';
+      if (signedIn === false) {
+        notice = 'You are signed out. <a href="/">Sign in on the home page</a> to save your runs.';
+      } else if (needsConsent) {
+        notice = 'One thing left: <a href="/">agree to telemetry collection</a> before you can start a run.';
       }
+
+      accountNotice.innerHTML = notice;
+      accountNotice.classList.toggle('hidden', notice === '');
 
       applyStartGate();
     },

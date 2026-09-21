@@ -8,8 +8,13 @@ import { fileURLToPath } from 'node:url';
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url)));
 
 export default defineConfig({
-  // Relative asset paths so the built dist/ runs from any static host or subpath.
-  base: './',
+  // Absolute asset paths. These were relative ('./') so dist/ could run from any
+  // subpath, but the site is permanently at the root of aimprint.vercel.app and
+  // relative paths break under clean URLs: at /play/ a './assets/x.js' resolves
+  // to /play/assets/x.js and 404s. Absolute removes that failure mode entirely.
+  // The only cost is that opening dist/index.html over file:// stops working,
+  // which was never a supported way to run this.
+  base: '/',
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version)
   },
@@ -17,11 +22,14 @@ export default defineConfig({
     // Three.js alone exceeds the default 500 kB advisory limit, and it is needed
     // on the first frame, so splitting it out would move bytes without saving any.
     chunkSizeWarningLimit: 800,
-    // Multi-page, not a router: privacy.html is a static document with no shared
-    // JS, so it ships as its own entry and never pulls in Three or the game.
+    // Multi-page, not a router. Three entries with three different payloads:
+    // index.html is the landing page and loads only the Supabase client,
+    // play.html is the game and is the only page that pulls in Three, and
+    // privacy.html is a static document with no JS at all.
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        play: fileURLToPath(new URL('./play.html', import.meta.url)),
         privacy: fileURLToPath(new URL('./privacy.html', import.meta.url))
       }
     }

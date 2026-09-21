@@ -221,20 +221,42 @@ order and the element becomes impossible to hide. `.screen.hidden` and `.account
 both exist for exactly this reason — `.account-row` is the collapsed signed-in row, which
 needs `display: flex`.
 
-**The build is multi-page, not routed.** `vite.config.js` declares two entries —
-`index.html` (the game) and `privacy.html` (a static document with its own inline styles and
-**no JS at all**, verified: the built page references no bundle). There is still no router
-and none is wanted. `privacy.html` cannot import `style.css`, because `body { overflow:
-hidden }` there exists for the game and would make a text page unscrollable.
+**The build is multi-page, not routed.** `vite.config.js` declares three entries, and the
+split is by payload, not by taste:
+
+| Page | URL | Ships | Sign-in form |
+|---|---|---|---|
+| `index.html` | `/` | `landing.js` + Supabase (~57 kB gz) | **Yes** |
+| `play.html` | `/play` | `main.js` + Three + Supabase (~139 kB gz) | **No** |
+| `privacy.html` | `/privacy` | nothing — **no JS at all** | No |
+
+`/` is the SEO target and the page a stranger lands on, so it must never pull in Three;
+verified after every build by checking `dist/index.html`'s script tags. There is still no
+router and none is wanted. `privacy.html` cannot import `style.css`, because `body {
+overflow: hidden }` there exists for the game and would make a text page unscrollable.
+
+**`play.html` has no sign-in form on purpose.** It is past the gate — you arrive already
+signed in. A signed-out or unconsented visitor gets a notice linking back to `/` and a
+disabled Start. Adding a third copy of the form here would mean three things to keep in
+sync for a page nobody signs in on.
+
+**`vercel.json` sets `cleanUrls: true` and `trailingSlash: false`,** which is what serves
+`dist/play.html` at `/play` and 301s `/play.html` to it. `trailingSlash` is not optional
+cosmetics: `/play/` would otherwise resolve relative asset paths one directory too deep.
 
 `public/` holds `favicon.svg`, `robots.txt` and `sitemap.xml`, copied verbatim to `dist/`.
 `og-image.html` sits at the repo root and is **deliberately excluded** from
 `rollupOptions.input` — it is a 1200×630 template used to regenerate
 `public/og-image.png` by screenshot, not a shipped page.
 
-**Open Graph URLs must stay absolute.** `base: './'` makes every built asset path relative,
-which is what lets `dist/` run from any host — but crawlers do not resolve relative
-`og:image`/`og:url`, so those are hardcoded to `https://aimprint.vercel.app`. If the
+**`base` is `'/'`, not `'./'`, and must stay absolute.** Relative asset paths and clean
+URLs are incompatible: at `/play/` a `./assets/x.js` resolves to `/play/assets/x.js` and
+404s. The old rationale for `'./'` — "dist/ runs from any host or subpath" — no longer
+applies, since the site is permanently at the root of `aimprint.vercel.app`. The only thing
+this cost is opening `dist/index.html` over `file://`, which was never supported anyway.
+
+**Open Graph URLs must stay absolute too**, for a different reason: crawlers do not resolve
+relative `og:image`/`og:url`. Each page carries its own `canonical` and `og:url`. If the
 hostname ever changes again, those tags and `robots.txt`/`sitemap.xml` are the places that
 do **not** update themselves.
 
@@ -318,6 +340,14 @@ to `schema.sql`. Read all of this for intent, never for current behaviour, and p
   either an unreachable button or a bypass. They are not collapsed into one because
   `home.js` deliberately does not import `supabase.js`; auth reaches it only as injected
   callbacks and rendered state.
+- **`ui/auth-panel.js` resolves its controls by `data-auth`, scoped to the root it is
+  given — never by global id.** That is what lets the landing pages style the form however
+  they like while sharing one implementation, and what stops two panels colliding. The
+  names are listed in `REQUIRED` at the top of that file and must match the markup; a
+  missing one throws **at construction**, naming it, rather than failing on first click.
+  It also sets block visibility with an **inline `display`**, deliberately, because it runs
+  on pages whose CSS it does not control and a class-based toggle loses to any rule giving
+  a block its own `display` (the `.x.hidden` trap below).
 - **`subjects.kind` is default-deny; never write a model prediction back into it.** See
   "Label integrity" below. This is the newest invariant in the codebase and the easiest to
   violate by accident once the pipeline exists — a retrain that consumes its predecessor's

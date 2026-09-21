@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Train — Aimprint</title>
+  <meta name="description"
+    content="Pick a routine, set your sensitivity, and run a timed aim session in your browser." />
+  <meta name="theme-color" content="#1a1a1a" />
+  <link rel="canonical" href="https://aimprint.vercel.app/play" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+
+  <!-- Open Graph. Absolute URLs are mandatory here: crawlers do not resolve
+       relative paths, and vite.config.js sets base:'./' so everything else on
+       the page is relative. -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Aimprint" />
+  <meta property="og:title" content="Train — Aimprint" />
+  <meta property="og:description"
+    content="Pick a routine, set your sensitivity, and run a timed aim session in your browser." />
+  <meta property="og:url" content="https://aimprint.vercel.app/play" />
+  <meta property="og:image" content="https://aimprint.vercel.app/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Aimprint — browser FPS aim trainer" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Train — Aimprint" />
+  <meta name="twitter:description"
+    content="Pick a routine, set your sensitivity, and run a timed aim session in your browser." />
+  <meta name="twitter:image" content="https://aimprint.vercel.app/og-image.png" />
+</head>
+
+<body>
+  <canvas id="scene"></canvas>
+  <div id="crosshair"></div>
+  <div id="hud">
+    <div class="hud-row hud-mode-row"><span class="hud-label">Mode</span><span id="hud-mode">&mdash;</span></div>
+    <div class="hud-row"><span class="hud-label">Time</span><span id="hud-time-left">&mdash;</span></div>
+    <div class="hud-row"><span class="hud-label">Score</span><span id="hud-score">0</span></div>
+    <div class="hud-row"><span class="hud-label">Attempts</span><span id="hud-attempts">0</span></div>
+    <div class="hud-row"><span class="hud-label">Accuracy</span><span id="hud-accuracy">0%</span></div>
+    <div class="hud-row"><span class="hud-label">Avg time</span><span id="hud-avg-time">0 ms</span></div>
+  </div>
+
+  <div id="home" class="screen">
+    <div class="panel">
+      <header class="panel-head">
+        <h1>Aimprint</h1>
+        <p class="muted">Pick a routine, set your sensitivity, and go.</p>
+      </header>
+
+      <!-- No sign-in form here on purpose: this page is past the gate. Signing
+           in happens on the landing page, which is the only place that markup
+           exists. A signed-out or unconsented visitor gets the notice below and
+           a link back, and Start stays disabled either way. -->
+      <section id="account-section" class="account">
+        <div id="account-signed-in" class="account-row hidden">
+          <p class="muted">Signed in as <strong id="account-email">&mdash;</strong></p>
+          <button id="signout-button" class="secondary">Sign out</button>
+        </div>
+        <p id="account-notice" class="note hidden"></p>
+      </section>
+
+      <section>
+        <h2>Routine</h2>
+        <div id="mode-grid" class="mode-grid"></div>
+      </section>
+
+      <section>
+        <h2>Difficulty</h2>
+        <div id="difficulty-row" class="segmented"></div>
+      </section>
+
+      <section>
+        <h2>Session length</h2>
+        <div id="duration-row" class="segmented"></div>
+      </section>
+
+      <section>
+        <h2>Sensitivity</h2>
+        <div class="field">
+          <label for="dpi-input">Mouse DPI</label>
+          <input id="dpi-input" type="number" min="100" max="32000" step="50" />
+        </div>
+        <div class="field">
+          <label for="sens-input">In-game sens</label>
+          <input id="sens-input" type="number" min="0.01" max="10" step="0.01" />
+        </div>
+        <div class="readout">
+          <div><span class="muted">eDPI</span><strong id="edpi-readout">&mdash;</strong></div>
+          <div><span class="muted">cm / 360&deg;</span><strong id="cm360-readout">&mdash;</strong></div>
+        </div>
+
+      </section>
+
+      <button id="start-button" class="primary">Start</button>
+      <p id="start-note" class="note">Esc pauses the clock. Left click to shoot.</p>
+    </div>
+  </div>
+
+  <div id="pause" class="screen hidden">
+    <div class="panel narrow">
+      <h2>Paused</h2>
+      <button id="resume-button" class="primary">Resume</button>
+      <button id="menu-button" class="secondary">End run</button>
+      <p class="note">
+        <span id="pause-time-left">&mdash;</span> left. Resuming continues this session.
+      </p>
+    </div>
+  </div>
+
+  <div id="results" class="screen hidden">
+    <div class="panel narrow">
+      <h2>Run finished</h2>
+      <div class="field"><span class="muted">Routine</span><strong id="result-routine">&mdash;</strong></div>
+      <div class="field"><span class="muted">Played</span><strong id="result-time">&mdash;</strong></div>
+      <div class="field"><span class="muted">Score</span><strong id="result-score">&mdash;</strong></div>
+      <div class="field"><span class="muted">Accuracy</span><strong id="result-accuracy">&mdash;</strong></div>
+      <div class="field"><span class="muted">Avg time</span><strong id="result-avg-time">&mdash;</strong></div>
+      <button id="results-menu-button" class="primary">Back to menu</button>
+      <p id="result-note" class="note"></p>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+
+</html>
