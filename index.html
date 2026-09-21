@@ -12,7 +12,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 
   <!-- Open Graph. Absolute URLs are mandatory: crawlers do not resolve relative
-       paths, and vite.config.js sets base:'./' so everything else is relative. -->
+       paths, so these stay hardcoded to the production host. -->
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Aimprint" />
   <meta property="og:title" content="Aimprint — free browser aim trainer" />
@@ -166,6 +166,11 @@
     .bar-right { display: flex; align-items: center; gap: 20px; }
 
     .bar-link {
+      font: inherit;
+      background: none;
+      border: 0;
+      padding: 0;
+      cursor: pointer;
       font-size: 14.5px;
       font-weight: 500;
       color: var(--chalk-dim);
@@ -174,6 +179,7 @@
     }
 
     .bar-link:hover { color: var(--chalk); }
+    .bar-link:focus-visible { outline: 2px solid var(--chalk); outline-offset: 3px; }
 
     /* ----------------------------------------------------------------- hero */
 
@@ -279,66 +285,9 @@
       outline-offset: 2px;
     }
 
-    /* --------------------------------------------------------------- drills */
-
-    .drills { padding: clamp(64px, 11vh, 132px) 0; border-top: 1px solid var(--line-soft); }
-
-    h2 {
-      font-family: var(--wide);
-      font-weight: 600;
-      font-size: clamp(26px, 3.6vw, 42px);
-      line-height: 1.02;
-      letter-spacing: -0.03em;
-      max-width: 17ch;
-    }
-
-    .section-note {
-      margin-top: 16px;
-      max-width: 48ch;
-      color: var(--chalk-dim);
-      font-size: 15.5px;
-    }
-
-    .drill-list {
-      margin-top: 44px;
-      border-top: 1px solid var(--line-soft);
-    }
-
-    .drill {
-      display: grid;
-      grid-template-columns: minmax(0, 15ch) minmax(0, 1fr) auto;
-      gap: clamp(16px, 4vw, 48px);
-      align-items: baseline;
-      padding: 20px 0;
-      border-bottom: 1px solid var(--line-soft);
-    }
-
-    .drill-name { font-weight: 600; font-size: 16px; }
-    .drill-blurb { color: var(--chalk-dim); font-size: 15px; }
-
-    .drill-len {
-      font-size: 13px;
-      color: var(--chalk-faint);
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-    }
-
-    /* ----------------------------------------------------------------- join */
-
-    .join {
-      padding: clamp(64px, 11vh, 132px) 0;
-      border-top: 1px solid var(--line-soft);
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 400px);
-      gap: clamp(36px, 6vw, 88px);
-      align-items: start;
-    }
-
-    .card {
-      background: var(--range-lift);
-      border: 1px solid var(--line);
-      padding: 26px;
-    }
+    /* ------------------------------------------------------- account form
+       These rules dress the form inside the modal. The section that used to
+       hold it in the page scroll is gone, along with .join and .card. */
 
     .btn-google {
       width: 100%;
@@ -439,6 +388,55 @@
 
     a:focus-visible { outline: 2px solid var(--chalk); outline-offset: 2px; }
 
+    /* ---------------------------------------------------------------- modal
+       A native <dialog>, not a hand-rolled overlay: it brings focus trapping,
+       Esc-to-close, inertness of the page behind it and a real ::backdrop with
+       no script. Signing in is a detour from the page, not part of it, so it
+       should not sit in the scroll as a form. */
+
+    #auth-modal {
+      padding: 0;
+      width: min(408px, calc(100vw - 28px));
+      max-height: calc(100dvh - 28px);
+      overflow: auto;
+      background: var(--range-lift);
+      color: var(--chalk);
+      border: 1px solid var(--line);
+    }
+
+    #auth-modal::backdrop { background: rgba(9, 10, 11, 0.76); }
+
+    .modal-inner { padding: 24px; }
+
+    .modal-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+
+    .modal-title {
+      font-family: var(--wide);
+      font-weight: 600;
+      font-size: 19px;
+      letter-spacing: -0.02em;
+    }
+
+    .modal-close {
+      font: inherit;
+      font-size: 13.5px;
+      background: none;
+      border: 0;
+      padding: 4px;
+      color: var(--chalk-faint);
+      cursor: pointer;
+      transition: color 140ms ease;
+    }
+
+    .modal-close:hover { color: var(--chalk); }
+    .modal-close:focus-visible { outline: 2px solid var(--chalk); outline-offset: 2px; }
+
     /* ------------------------------------------------------------ auth card
        The three account states share the card. Which one shows is decided by
        ui/auth-panel.js, which sets display inline — so no rule here may give
@@ -492,10 +490,7 @@
     /* ------------------------------------------------------------ responsive */
 
     @media (max-width: 900px) {
-      .join { grid-template-columns: 1fr; }
       .hero-copy { max-width: 100%; }
-      .drill { grid-template-columns: 1fr; gap: 4px; }
-      .drill-len { display: none; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -514,7 +509,7 @@
     <div class="bar">
       <span class="mark">Aimprint</span>
       <div class="bar-right">
-        <a class="bar-link" href="#join">Sign in</a>
+        <button class="bar-link" data-modal="open">Sign in</button>
       </div>
     </div>
 
@@ -524,123 +519,11 @@
         <p class="lede">Five aim drills in your browser. Nothing to download, and
           every run is saved.</p>
         <div class="hero-actions">
-          <a class="btn btn-primary" data-cta="start" href="#join">Start training</a>
+          <button class="btn btn-primary" data-modal="open">Start training</button>
           <span class="free">Free.</span>
         </div>
       </div>
     </div>
-  </section>
-
-  <section class="shell drills">
-    <h2>Five drills, each for a different problem.</h2>
-    <p class="section-note">Pick one, pick a length, go. They are a set rather than a
-      ladder — there is no order you are meant to follow.</p>
-
-    <div class="drill-list">
-      <div class="drill">
-        <div class="drill-name">Precision Flick</div>
-        <div class="drill-blurb">One target at a time. Flick, click, repeat.</div>
-        <div class="drill-len">5 / 10 / 15 min</div>
-      </div>
-      <div class="drill">
-        <div class="drill-name">Static Flicking</div>
-        <div class="drill-blurb">Three to four static targets held on screen.</div>
-        <div class="drill-len">5 / 10 / 15 min</div>
-      </div>
-      <div class="drill">
-        <div class="drill-name">Dynamic Reflex</div>
-        <div class="drill-blurb">One target, on a timer. Hit it before it vanishes.</div>
-        <div class="drill-len">5 / 10 / 15 min</div>
-      </div>
-      <div class="drill">
-        <div class="drill-name">Reactive Strafing</div>
-        <div class="drill-blurb">Track a target that changes direction without warning.</div>
-        <div class="drill-len">5 / 10 / 15 min</div>
-      </div>
-      <div class="drill">
-        <div class="drill-name">Target Switching</div>
-        <div class="drill-blurb">Several moving targets. Destroy one, acquire the next.</div>
-        <div class="drill-len">5 / 10 / 15 min</div>
-      </div>
-    </div>
-  </section>
-
-  <section class="shell join" id="join">
-    <div>
-      <h2>Make an account and your runs are kept.</h2>
-      <p class="section-note">Scores, accuracy and reaction times stay with you between
-        sessions. Aimprint also records how your mouse moves during a run and uses it
-        for research — you agree to that here, and
-        <a href="/privacy">this explains exactly what is recorded</a>.</p>
-    </div>
-
-    <div class="card" id="auth-panel">
-      <!-- Three mutually exclusive blocks. ui/auth-panel.js finds every control
-           below by its data-auth name, scoped to #auth-panel, and toggles which
-           block is visible. Renaming or dropping a data-auth value throws at
-           page load with the missing name, rather than failing on click. -->
-
-      <div data-auth="signed-out">
-        <button class="btn btn-google" data-auth="google">
-          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
-            <path fill="#4285F4" d="M23 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.2a5.3 5.3 0 0 1-2.3 3.5v2.9h3.7c2.2-2 3.4-5 3.4-8.6z"/>
-            <path fill="#34A853" d="M12 24c3.1 0 5.7-1 7.6-2.8l-3.7-2.9c-1 .7-2.3 1.1-3.9 1.1-3 0-5.5-2-6.4-4.7H1.8v3C3.7 21.4 7.6 24 12 24z"/>
-            <path fill="#FBBC05" d="M5.6 14.7a7.2 7.2 0 0 1 0-4.6v-3H1.8a12 12 0 0 0 0 10.6l3.8-3z"/>
-            <path fill="#EA4335" d="M12 4.8c1.7 0 3.2.6 4.4 1.7l3.2-3.2C17.7 1.5 15.1.4 12 .4 7.6.4 3.7 3 1.8 6.8l3.8 3c.9-2.8 3.4-4.8 6.4-4.8z"/>
-          </svg>
-          Continue with Google
-        </button>
-
-        <div class="divider">or use an email address</div>
-
-        <div class="row">
-          <label for="g-email">Email</label>
-          <div class="plate">
-            <input id="g-email" data-auth="email" type="email" placeholder="you@example.com"
-              autocomplete="email" />
-          </div>
-        </div>
-
-        <div class="row">
-          <label for="g-pass">Password</label>
-          <div class="plate">
-            <input id="g-pass" data-auth="password" type="password"
-              placeholder="At least 6 characters" autocomplete="current-password" />
-          </div>
-        </div>
-
-        <div class="auth-actions">
-          <button class="btn btn-ghost" data-auth="signin">Sign in</button>
-          <button class="btn btn-primary" data-auth="signup">Create account</button>
-        </div>
-
-        <p class="msg" data-auth="message" role="alert"></p>
-
-        <p class="fine">One email to confirm your address. We will only write again to
-          invite you back for another session.</p>
-      </div>
-
-      <div data-auth="consent">
-        <p class="card-head">Signed in as <strong data-auth="consent-email">&mdash;</strong></p>
-
-        <label class="consent">
-          <input type="checkbox" data-auth="consent-checkbox" />
-          <span>I agree that my mouse movement during training is recorded and used for
-            this research. <a href="/privacy">What gets recorded</a>.</span>
-        </label>
-
-        <button class="btn btn-primary btn-block" data-auth="consent-submit">Agree and start</button>
-        <p class="msg" data-auth="consent-message" role="alert"></p>
-        <button class="btn btn-ghost btn-block" data-auth="consent-signout">Sign out</button>
-      </div>
-
-      <div data-auth="signed-in">
-        <p class="card-head">Signed in as <strong data-auth="account-email">&mdash;</strong></p>
-        <a class="btn btn-primary btn-block" data-cta="start" href="/play">Start training</a>
-        <button class="btn btn-ghost btn-block" data-auth="signout">Sign out</button>
-      </div>
-    </div>
-
   </section>
 
   <div class="shell">
@@ -708,6 +591,38 @@
       const rnd = (a, b) => a + Math.random() * (b - a);
       const targets = [];
       const marks = [];
+
+      /* ------------------------------------------------------------- trace
+         The line the cursor leaves is the product's actual subject: not where
+         you clicked, but how you got there. Stroke weight runs inverse to
+         speed — a fast flick draws thin, settling on a target draws thick —
+         which is what makes the shape of a movement readable rather than just
+         decorative. Drawn in chalk, never red, so it never competes with a
+         target for the one accent colour. */
+      const trail = [];
+      const TRAIL_MAX = 300;
+      const TRAIL_MS = 900;
+
+      if (REDUCED === false) {
+        window.addEventListener('pointermove', (e) => {
+          const box = canvas.getBoundingClientRect();
+          const x = e.clientX - box.left;
+          const y = e.clientY - box.top;
+
+          // Only record over the range. A point captured while scrolled past
+          // it would draw a straight jump across the hero on the way back.
+          if (x < 0 || y < 0 || x > box.width || y > box.height) return;
+
+          const now = performance.now();
+          const prev = trail[trail.length - 1];
+          const v = prev
+            ? (Math.hypot(x - prev.x, y - prev.y) / Math.max(now - prev.t, 1)) * 1000
+            : 0;
+
+          trail.push({ x, y, t: now, v });
+          if (trail.length > TRAIL_MAX) trail.shift();
+        }, { passive: true });
+      }
 
       // Spawns are rejected where they would overlap the copy block. Measuring
       // it beats hardcoding safe fractions: the headline reflows at every
@@ -819,6 +734,24 @@
       function draw(now) {
         ctx.clearRect(0, 0, W, H);
 
+        // Expire by age as well as by count, so the line fades out when the
+        // cursor stops instead of hanging on screen until the next move.
+        while (trail.length > 0 && now - trail[0].t > TRAIL_MS) trail.shift();
+
+        // Drawn first: targets and shot feedback always read on top of it.
+        ctx.lineCap = 'round';
+        for (let i = 1; i < trail.length; i++) {
+          const a = trail[i - 1];
+          const b = trail[i];
+          const age = i / trail.length;
+          ctx.strokeStyle = `rgba(230, 228, 224, ${(age * 0.32).toFixed(3)})`;
+          ctx.lineWidth = Math.max(0.5, 3.4 - Math.min(b.v, 2600) / 900);
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+
         for (const t of targets) {
           const x = t.x * W;
           const y = t.y * H;
@@ -890,6 +823,83 @@
       }, { threshold: 0.02 }).observe(canvas);
     })();
   </script>
+
+  <dialog id="auth-modal" aria-labelledby="auth-modal-title">
+    <div class="modal-inner">
+      <div class="modal-head">
+        <span class="modal-title" id="auth-modal-title">Start training</span>
+        <button class="modal-close" data-modal="close">Close</button>
+      </div>
+
+      <div id="auth-panel">
+      <!-- Three mutually exclusive blocks. ui/auth-panel.js finds every control
+             below by its data-auth name, scoped to #auth-panel, and toggles which
+             block is visible. Renaming or dropping a data-auth value throws at
+             page load with the missing name, rather than failing on click. -->
+
+        <div data-auth="signed-out">
+          <button class="btn btn-google" data-auth="google">
+            <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+              <path fill="#4285F4" d="M23 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.2a5.3 5.3 0 0 1-2.3 3.5v2.9h3.7c2.2-2 3.4-5 3.4-8.6z"/>
+              <path fill="#34A853" d="M12 24c3.1 0 5.7-1 7.6-2.8l-3.7-2.9c-1 .7-2.3 1.1-3.9 1.1-3 0-5.5-2-6.4-4.7H1.8v3C3.7 21.4 7.6 24 12 24z"/>
+              <path fill="#FBBC05" d="M5.6 14.7a7.2 7.2 0 0 1 0-4.6v-3H1.8a12 12 0 0 0 0 10.6l3.8-3z"/>
+              <path fill="#EA4335" d="M12 4.8c1.7 0 3.2.6 4.4 1.7l3.2-3.2C17.7 1.5 15.1.4 12 .4 7.6.4 3.7 3 1.8 6.8l3.8 3c.9-2.8 3.4-4.8 6.4-4.8z"/>
+            </svg>
+            Continue with Google
+          </button>
+
+          <div class="divider">or use an email address</div>
+
+          <div class="row">
+            <label for="g-email">Email</label>
+            <div class="plate">
+              <input id="g-email" data-auth="email" type="email" placeholder="you@example.com"
+                autocomplete="email" />
+            </div>
+          </div>
+
+          <div class="row">
+            <label for="g-pass">Password</label>
+            <div class="plate">
+              <input id="g-pass" data-auth="password" type="password"
+                placeholder="At least 6 characters" autocomplete="current-password" />
+            </div>
+          </div>
+
+          <div class="auth-actions">
+            <button class="btn btn-ghost" data-auth="signin">Sign in</button>
+            <button class="btn btn-primary" data-auth="signup">Create account</button>
+          </div>
+
+          <p class="msg" data-auth="message" role="alert"></p>
+
+          <p class="fine">One email to confirm your address. We will only write again to
+            invite you back for another session.</p>
+        </div>
+
+        <div data-auth="consent">
+          <p class="card-head">Signed in as <strong data-auth="consent-email">&mdash;</strong></p>
+
+          <label class="consent">
+            <input type="checkbox" data-auth="consent-checkbox" />
+            <span>I agree that my mouse movement during training is recorded and used for
+              this research. <a href="/privacy">What gets recorded</a>.</span>
+          </label>
+
+          <button class="btn btn-primary btn-block" data-auth="consent-submit">Agree and start</button>
+          <p class="msg" data-auth="consent-message" role="alert"></p>
+          <button class="btn btn-ghost btn-block" data-auth="consent-signout">Sign out</button>
+        </div>
+
+        <div data-auth="signed-in">
+          <p class="card-head">Signed in as <strong data-auth="account-email">&mdash;</strong></p>
+          <a class="btn btn-primary btn-block" data-cta="start" href="/play">Start training</a>
+          <button class="btn btn-ghost btn-block" data-auth="signout">Sign out</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   <script type="module" src="/src/landing.js"></script>
 </body>
 

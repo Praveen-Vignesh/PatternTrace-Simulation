@@ -48,16 +48,45 @@ if (root !== null) {
     }
   });
 
-  // The hero button jumps to the form for a signed-out visitor and straight
-  // into the game for someone who has already finished it. One control, one
-  // name, two correct destinations.
-  const cta = document.querySelectorAll('[data-cta="start"]');
+  const modal = document.getElementById('auth-modal');
+  let ready = false;
+
+  // "Start training" means one thing and does the right one of two: an account
+  // that can already play goes straight to the game, everyone else gets the
+  // form. The button never changes its name, because the promise is the same.
+  function openAuth() {
+    if (ready) {
+      window.location.href = PLAY_URL;
+      return;
+    }
+    if (modal.open === false) modal.showModal();
+  }
+
+  for (const trigger of document.querySelectorAll('[data-modal="open"]')) {
+    trigger.addEventListener('click', openAuth);
+  }
+
+  for (const trigger of document.querySelectorAll('[data-modal="close"]')) {
+    trigger.addEventListener('click', () => modal.close());
+  }
+
+  // Clicking the backdrop closes. <dialog> gives Esc and focus trapping for
+  // free but treats the backdrop as part of the element, so the only way to
+  // tell them apart is to check whether the click landed outside the box.
+  modal.addEventListener('click', (event) => {
+    if (event.target !== modal) return;
+    const box = modal.getBoundingClientRect();
+    const inside =
+      event.clientX >= box.left &&
+      event.clientX <= box.right &&
+      event.clientY >= box.top &&
+      event.clientY <= box.bottom;
+    if (inside === false) modal.close();
+  });
 
   onAuthChange((state) => {
     panel.render(state);
-
-    const ready = state.status === 'signed_in' && state.consented === true;
-    for (const link of cta) link.setAttribute('href', ready ? PLAY_URL : '#join');
+    ready = state.status === 'signed_in' && state.consented === true;
   });
 
   // supabase-js trusts the session it restores from localStorage without asking
