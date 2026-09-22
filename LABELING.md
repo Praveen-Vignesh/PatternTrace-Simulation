@@ -2,6 +2,9 @@
 
 > ## STATUS — verified against the live database 2026-09-17
 > **The migration IS applied. §4 has been run. Do not re-run it routinely.**
+> This block is the single place in the repo that answers "is the label fix
+> actually live", as opposed to "has the SQL been written". **Keep it current by
+> hand as the remaining steps are run.**
 >
 > Confirmed by query, not by assumption:
 > - `subjects.kind` default is `'unknown'` (§6 check 3) ✅
@@ -11,17 +14,28 @@
 > - `v_training_segments` exists, exposes `subject_kind_source` /
 >   `subject_cohort` / `subject_labeled_at`, and `is_human` is **three-valued**
 >   (`CASE` present) ✅ — this is the precondition §5.1 demands
-> - §5.2 pre-flight returned **0** rows needing backfill, so **§5.4 is a no-op**
->   on this database ✅
 > - **0** orphaned `auth.users` rows (§4 step 2) ✅
+> - §5.2 pre-flight returned **0** rows needing backfill, so **§5.4 is a no-op**
+>   on this database ✅ — against 2 total subjects, both sitting at
+>   `kind='unknown', kind_source='default'`. No row was ever mislabelled.
+> - §5.5 **done** — `alter table public.subjects validate constraint
+>   subjects_label_has_provenance;` ran clean, and `select conname, convalidated
+>   from pg_constraint where conrelid='public.subjects'::regclass and
+>   conname='subjects_label_has_provenance'` confirms `convalidated = true` ✅
+>   Enforced against every existing row now, not just future writes.
+> - §5.7 divergence gate **run** — returned 0 rows (trivial at 2 subjects,
+>   neither merged) ✅ Re-run after any future labelling batch, per §5.7's
+>   "not optional" warning.
 >
-> Remaining: §5.5 (validate the constraint) and §5.7 (divergence gate) — both
-> trivial at 2 subjects. §5.6 (labelling batches) waits until bot accounts and
-> human contributors actually exist.
+> Remaining: **§5.6 only** (labelling bot accounts and trusted human
+> contributors). It cannot start before Phase 6 recruitment / bot provisioning,
+> and §5.6 has the exact batch-`UPDATE` statements.
 >
-> *An earlier version of this block said the database had NOT been changed. That
-> was stale and contradicted `CLAUDE.md`; the queries above resolved it. If you
-> restore from a backup predating 2026-09-17, re-verify before trusting this.*
+> *An earlier version of this block said the database had NOT been changed, and
+> an earlier `CLAUDE.md` claimed at least one real account sat mislabelled as
+> `kind='human'`. Both were stale; the queries above resolved it — that claim
+> predated the migration and was never re-checked. If you restore from a backup
+> predating 2026-09-17, re-run the §5.2 pre-flight before trusting any of this.*
 
 **What this document is.** Why the human-vs-bot ground-truth label was unsafe,
 what changed, and the runbook for applying it. `schema.sql` is authoritative for
@@ -383,8 +397,11 @@ make the documented workflow's labels invisible. Gate, don't re-architect.
 
 ## 9. Known-stale elsewhere
 
-`TELEMETRY.md` (§551, §556-558, §717) still describes `is_human` as a plain
-boolean passed through unchanged into `features.py`. Deliberately not updated —
-`CLAUDE.md` already declares that file stale and instructs readers to treat it as
-intent, not current behaviour. Recorded here so the staleness is known rather
-than accidental.
+Nothing outstanding. `TELEMETRY.md`, which used to be listed here for describing
+`is_human` as a plain boolean passed unchanged into `features.py`, **no longer
+exists in this repo** — the concern died with the file. The three-valued contract
+now lives in §7.1 above and in `model/DESIGN.md`.
+
+`schema.sql` (the comment above `v_training_segments`) names `fetch_telemetry.py`
+as the view's consumer. That is a forward reference to unwritten code, not
+evidence the pipeline exists.

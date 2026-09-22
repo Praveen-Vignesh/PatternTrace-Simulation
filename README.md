@@ -57,7 +57,7 @@ npm run dev
 ```
 
 Open http://localhost:5173/, pick a routine, a difficulty and a session length
-(5, 10 or 15 minutes), then press Start and left-click to shoot. `Esc` releases
+(1, 5, 10 or 15 minutes), then press Start and left-click to shoot. `Esc` releases
 the pointer and **pauses the countdown**; resuming continues the same run, so a
 run spans as many pointer locks as you like. The run ends when its timer expires
 or you pick "End run", and a results screen reports how much of it you played —
