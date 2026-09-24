@@ -452,6 +452,14 @@ Prefer `src/telemetry.js` + `schema.sql` over any prose if they ever disagree.
     constant in `constants.js` therefore re-prompts every existing player. That is
     intended: it is what stops agreement to superseded wording being silently honoured. Do
     not weaken it to a presence check, and bump the version only on a material change.
+  - **A `profiles_mirror_consent` trigger copies consent onto `subjects`.** The client
+    writes only `profiles`, which is `on delete cascade` from `auth.users` — so deleting an
+    account used to destroy the sole record that consent was given while the telemetry it
+    authorised lived on. `subjects.consent_version`/`consented_at` exist to outlive that,
+    and nothing wrote them until this trigger; the guarantee in `schema.sql`'s `subjects`
+    comment was aspirational. It is `SECURITY DEFINER` (the client has no policy on
+    `subjects` and must not get one) and writes **only the two consent columns, never
+    `kind`**, so the default-deny label contract is untouched.
 - **Playing requires an account; there is no trial.** A `FREE_SESSION_LIMIT` trial used to
   precede the gate and was removed: it wrote nothing (no auth session, no subject to attach
   to), so every run it granted was play the project could not learn from — roughly twenty
@@ -534,6 +542,18 @@ Rules the v2 design encodes, worth preserving in any migration:
   biometric template, so an account cannot download its own reference data to replay it.
   Aggregates reach the player through `session_metrics`, and the training pull goes
   through the `v_training_segments` view with the service key.
+- **Every policy calls `(select public.current_subject_id())`, never the bare function.**
+  `STABLE` promises the value will not change within a statement; it does **not** make
+  Postgres evaluate it once. A bare call inside a per-row subplan re-runs for every row —
+  and twice per row in the `segments` insert policy, whose `EXISTS` reads `sessions` and so
+  re-applies that table's own RLS. The scalar-subquery form becomes an InitPlan evaluated
+  once per statement. Keep the wrapper; the comment above the function explains it.
+- **`segments` carries no index on `outcome`, deliberately.** It was dropped: four distinct
+  values on the largest table means the planner never picks it, nothing queries it (there
+  is no select policy, and the training pull filters on routine and label), and on an
+  append-only table it concentrated every insert onto four hot leaf pages shared by all
+  concurrent writers. The three payload columns are also set to `lz4` compression — a
+  throughput change, not a disk one, since every one of those blobs is TOASTed on write.
 
 **Two sets of credentials, and they must not cross.** The browser reads `.env.local`
 (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`) — a publishable key (`sb_publishable_...`)
@@ -561,14 +581,14 @@ remaining step, do not improvise them, and keep that STATUS block current by han
 
 ## Known defects — not yet fixed
 
-- **Seven pre-existing `pg_constraint` guards in `schema.sql` match on `conname` alone**,
-  with no `conrelid` scoping (`subjects_kind_source_check`, `sessions_dpi_positive`,
-  `sessions_sens_positive`, `segments_frame_count_positive`, `segments_target_count_positive`,
-  `segments_segment_index_nonneg`, `segments_durations_nonneg`). This works today only
-  because every constraint name in this database happens to be unique — it is not
-  load-bearing yet, but it is inconsistent with the two constraints added for the label fix
-  (`subjects_kind_allowed`, `subjects_label_has_provenance`), which are properly scoped by
-  `conrelid`. Cosmetic; normalize if touching this area again.
+- **The database is not sized for multiple concurrent users.** One 10-minute session
+  writes **~9.6 MB** (`input_events` is ~55% of it), so 50 users × 3 sessions/week is
+  ~6.2 GB/month against a 500 MB free tier and an 8 GB Pro tier, with nothing deleting,
+  partitioning or archiving anything. A failed `sessions` insert also discards that whole
+  session's segments *before* they reach the outbox (`supabase.js:435-438`, `:449-451`),
+  and every failure path reports only to the user's own `console.warn`, so the loss is
+  invisible. **`src/TODO.md` is the live list** — it holds these, the deferred orphan
+  repair and BRIN index, and the smaller findings, each with the SQL or the file:line.
 - **`model/` does not exist as code.** Not a defect in anything built — a reminder that
   the pipeline is a design (`model/DESIGN.md`), not a working program, and should not be
   cited as if it runs. `schema.sql`'s comment above `v_training_segments` names

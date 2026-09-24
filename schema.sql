@@ -140,7 +140,9 @@ alter table public.subjects add column if not exists labeled_at timestamptz;
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint where conname = 'subjects_kind_source_check'
+    select 1 from pg_constraint
+     where conrelid = 'public.subjects'::regclass
+       and conname = 'subjects_kind_source_check'
   ) then
     alter table public.subjects
       add constraint subjects_kind_source_check
@@ -326,9 +328,21 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
--- The subject of the caller. STABLE so Postgres evaluates it once per statement
--- rather than once per row; SECURITY DEFINER so the RLS policies below can read
--- profiles without granting the client select on it.
+-- The subject of the caller. SECURITY DEFINER so the RLS policies below can
+-- read profiles without granting the client select on it.
+--
+-- STABLE guarantees the value does not change within a statement; it does NOT
+-- make Postgres evaluate it only once. Only IMMUTABLE functions are folded at
+-- plan time, so a STABLE zero-argument function sitting inside a per-row
+-- subplan is re-executed for every row — and in the segments insert policy it
+-- ran TWICE per row, because that policy's EXISTS reads sessions, which
+-- re-applies its own RLS. Every call parses the JWT claims and hits
+-- profiles_pkey.
+--
+-- That is why each policy below calls it as `(select public.current_subject_id())`
+-- rather than bare. The scalar-subquery form becomes an InitPlan the planner
+-- evaluates exactly once per statement, which is what the old comment here
+-- incorrectly claimed STABLE alone was doing. Keep the wrapper.
 create or replace function public.current_subject_id()
 returns uuid
 language sql
@@ -338,6 +352,57 @@ set search_path = public
 as $$
   select subject_id from public.profiles where user_id = auth.uid();
 $$;
+
+-- Consent durability. profiles.consent_version is where the client writes (it
+-- is the only column pair the grant below permits), but profiles is
+-- `on delete cascade` from auth.users — so deleting an account destroys the
+-- only record that consent was ever given, while the sessions and segments it
+-- authorised survive on the subject. subjects.consent_version exists precisely
+-- to outlive that deletion, and until this trigger it was never written by
+-- anything: the guarantee in the subjects comment above was aspirational.
+--
+-- SECURITY DEFINER because the client has no policy on subjects and must not
+-- get one. This writes ONLY the two consent columns — never `kind` — so the
+-- default-deny label contract is untouched. The client still cannot influence
+-- anything here beyond consenting for its own profile, which is the intended
+-- action.
+create or replace function public.mirror_consent_to_subject()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if new.consent_version is not null
+     and (new.consent_version, new.consented_at)
+         is distinct from (old.consent_version, old.consented_at) then
+    update public.subjects
+       set consent_version = new.consent_version,
+           consented_at    = new.consented_at
+     where subject_id = new.subject_id;
+  end if;
+  return new;
+end;
+$$;
+
+-- AFTER UPDATE only. Consent is never present at INSERT — handle_new_user()
+-- writes just (user_id, subject_id) — and referencing OLD in an INSERT trigger
+-- would raise.
+drop trigger if exists profiles_mirror_consent on public.profiles;
+
+create trigger profiles_mirror_consent
+  after update on public.profiles
+  for each row execute function public.mirror_consent_to_subject();
+
+-- One-time backfill for accounts that consented before the trigger existed.
+-- Idempotent: the `is distinct from` makes a re-run a no-op.
+update public.subjects sub
+   set consent_version = p.consent_version,
+       consented_at    = p.consented_at
+  from public.profiles p
+ where p.subject_id = sub.subject_id
+   and p.consent_version is not null
+   and sub.consent_version is distinct from p.consent_version;
 
 -- ---------------------------------------------------------------------------
 -- sessions
@@ -438,12 +503,18 @@ alter table public.sessions alter column sampling_version set default 3;
 
 -- dpi/sens feed sensitivity.js's cm_per_360 derivation directly; a zero or
 -- negative value would divide-by-zero or silently invert it downstream.
+-- Scoped by conrelid as well as conname; see the note on the segments guards
+-- below for why a name-only check is unsafe.
 do $$
 begin
-  if not exists (select 1 from pg_constraint where conname = 'sessions_dpi_positive') then
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.sessions'::regclass
+                    and conname = 'sessions_dpi_positive') then
     alter table public.sessions add constraint sessions_dpi_positive check (dpi > 0);
   end if;
-  if not exists (select 1 from pg_constraint where conname = 'sessions_sens_positive') then
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.sessions'::regclass
+                    and conname = 'sessions_sens_positive') then
     alter table public.sessions add constraint sessions_sens_positive check (sens > 0);
   end if;
 end $$;
@@ -560,21 +631,56 @@ alter table public.segments add column if not exists duration_ms int;
 -- being rejected at write time. A null still satisfies each of these (Postgres
 -- CHECK is satisfied unless the expression is false), so click-only fields
 -- stay untouched on non-click rows.
+-- Each guard is scoped by conrelid as well as conname. Constraint names are
+-- only unique per TABLE in Postgres, not per schema, so a name-only check would
+-- silently skip adding a constraint here because an unrelated table already
+-- carries one by that name — leaving the column unguarded with no error.
 do $$
 begin
-  if not exists (select 1 from pg_constraint where conname = 'segments_frame_count_positive') then
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.segments'::regclass
+                    and conname = 'segments_frame_count_positive') then
     alter table public.segments add constraint segments_frame_count_positive check (frame_count > 0);
   end if;
-  if not exists (select 1 from pg_constraint where conname = 'segments_target_count_positive') then
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.segments'::regclass
+                    and conname = 'segments_target_count_positive') then
     alter table public.segments add constraint segments_target_count_positive check (target_count > 0);
   end if;
-  if not exists (select 1 from pg_constraint where conname = 'segments_segment_index_nonneg') then
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.segments'::regclass
+                    and conname = 'segments_segment_index_nonneg') then
     alter table public.segments add constraint segments_segment_index_nonneg check (segment_index >= 0);
   end if;
-  if not exists (select 1 from pg_constraint where conname = 'segments_durations_nonneg') then
+  if not exists (select 1 from pg_constraint
+                  where conrelid = 'public.segments'::regclass
+                    and conname = 'segments_durations_nonneg') then
     alter table public.segments add constraint segments_durations_nonneg
       check (time_to_click_ms >= 0 and dwell_ms >= 0 and duration_ms >= 0);
   end if;
+end $$;
+
+-- TOAST compression for the three payload columns. Every one of these blobs is
+-- far over the ~2 kB TOAST threshold, so all of them are compressed and pushed
+-- out of line on every insert — which makes the compressor a per-insert CPU
+-- cost paid by every concurrent writer. lz4 is markedly faster than the default
+-- pglz at a comparable ratio on this shape of data (long runs of repetitive
+-- numeric headers), so this is throughput, not disk.
+--
+-- Applies to newly written values only; existing rows keep whatever they were
+-- written with, which is fine because both algorithms stay readable.
+-- Deliberately NOT `set storage external` — that would disable compression
+-- entirely and roughly triple the disk these columns occupy.
+--
+-- Wrapped so a server built without lz4 degrades to a notice instead of
+-- rolling back the entire migration (the whole file is one transaction).
+do $$
+begin
+  alter table public.segments alter column trajectory       set compression lz4;
+  alter table public.segments alter column input_events     set compression lz4;
+  alter table public.segments alter column board_trajectory set compression lz4;
+exception when others then
+  raise notice 'lz4 compression unavailable (%), leaving default pglz', sqlerrm;
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -611,8 +717,17 @@ create index if not exists sessions_routine_difficulty_idx
 -- unique constraint above already is that index; a second one would only add
 -- write overhead with no query it serves that the first doesn't.
 drop index if exists public.segments_session_idx;
-create index if not exists segments_outcome_idx
-  on public.segments (outcome);
+-- segments_outcome_idx is DROPPED, not merely unused. `outcome` has four
+-- distinct values on what will be the largest table here, so the planner will
+-- never choose it over a sequential scan; and nothing queries it anyway —
+-- segments has no select policy at all, and the training pull filters on
+-- routine and label, never outcome. It was also actively harmful: Postgres
+-- appends the heap TID as an implicit btree tiebreaker, so on an append-only
+-- table every insert of a given outcome lands at the right edge of that key's
+-- range. Four values means four hot leaf pages shared by every concurrent
+-- writer — buffer-content-lock contention that scales with user count, paid on
+-- every insert, for a read that never happens. Do not reinstate it.
+drop index if exists public.segments_outcome_idx;
 create index if not exists subjects_kind_idx
   on public.subjects (kind);
 -- Resolving a subject to its canonical identity in the training view, and
@@ -654,7 +769,7 @@ drop policy if exists "profiles update own" on public.profiles;
 create policy "profiles update own"
   on public.profiles for update to authenticated
   using (user_id = auth.uid())
-  with check (user_id = auth.uid() and subject_id = public.current_subject_id());
+  with check (user_id = auth.uid() and subject_id = (select public.current_subject_id()));
 
 -- RLS alone cannot restrict *which columns* an update touches — the policy
 -- above passes for any column value as long as user_id/subject_id are intact.
@@ -672,7 +787,7 @@ drop policy if exists "sessions insert own" on public.sessions;
 create policy "sessions insert own"
   on public.sessions for insert to authenticated
   with check (
-    subject_id = public.current_subject_id()
+    subject_id = (select public.current_subject_id())
     and ended_at is null
     and poll_hz is null
     and bot_mode is null
@@ -681,7 +796,7 @@ create policy "sessions insert own"
 drop policy if exists "sessions select own" on public.sessions;
 create policy "sessions select own"
   on public.sessions for select to authenticated
-  using (subject_id = public.current_subject_id());
+  using (subject_id = (select public.current_subject_id()));
 
 -- segments: insert into your own session only. Deliberately NO select policy —
 -- trajectory and input_events are the raw material of the biometric template,
@@ -694,7 +809,7 @@ create policy "segments insert own"
     exists (
       select 1 from public.sessions s
       where s.id = session_id
-        and s.subject_id = public.current_subject_id()
+        and s.subject_id = (select public.current_subject_id())
     )
   );
 
@@ -706,7 +821,7 @@ create policy "session metrics select own"
     exists (
       select 1 from public.sessions s
       where s.id = session_id
-        and s.subject_id = public.current_subject_id()
+        and s.subject_id = (select public.current_subject_id())
     )
   );
 
